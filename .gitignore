@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Environment / secrets
+.env
+.env.local
+.env.production
+
+# Data files (local state, not committed)
+backend/config.json
+backend/positions.json
+
+# Node
+node_modules/
+frontend/build/
+
+# OS
+.DS_Store
