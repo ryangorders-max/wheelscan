@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-from data import scan_watchlist, get_stock_info, get_heatmap
+from data import scan_watchlist, get_stock_info, get_heatmap, score_results
 
 BASE_DIR       = Path(__file__).parent
 CONFIG_PATH    = BASE_DIR / "config.json"
@@ -103,7 +103,8 @@ def _symbols(cfg: dict) -> list[str]:
 @app.get("/scan")
 def scan():
     cfg = read_config()
-    return scan_watchlist(_symbols(cfg), cfg)
+    results = scan_watchlist(_symbols(cfg), cfg)
+    return score_results(results)
 
 
 @app.get("/scan/{symbol}")

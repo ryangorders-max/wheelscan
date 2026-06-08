@@ -541,6 +541,7 @@ const COLUMNS = [
   { col: 'mid',           label: 'Premium' },
   { col: 'roc',           label: 'ROC %' },
   { col: 'rocAnnualized', label: 'Ann ROC %' },
+  { col: 'wheelScore',    label: 'Score' },
   { col: 'earnings',      label: 'Earnings' },
   { col: 'cap',           label: 'Cap' },
 ];
@@ -559,6 +560,7 @@ function getValue(row, col) {
     case 'mid':           return c?.mid;
     case 'roc':           return c?.roc;
     case 'rocAnnualized': return c?.rocAnnualized;
+    case 'wheelScore':    return row.wheelScore;
     case 'earnings':      return row.earningsDate;
     case 'cap':           return c?.exceedsCollateralCap ? 1 : 0;
     default:              return null;
@@ -670,7 +672,7 @@ function ScreenerTab({ minROC }) {
                       <tr className="border-b border-gray-900 bg-red-950/30 cursor-pointer"
                           onClick={() => handleRowClick(row.symbol)}>
                         <td className="px-3 py-2 font-mono font-bold text-red-400">{row.symbol}</td>
-                        <td colSpan={11} className="px-3 py-2 text-red-500 text-xs">{row.errorMessage || 'Error'}</td>
+                        <td colSpan={12} className="px-3 py-2 text-red-500 text-xs">{row.errorMessage || 'Error'}</td>
                       </tr>
                     </React.Fragment>
                   );
@@ -704,6 +706,17 @@ function ScreenerTab({ minROC }) {
                         <td className="px-3 py-2 font-mono text-green-400">{c ? fmt.dollar(c.mid) : '—'}</td>
                         <td className="px-3 py-2 font-mono font-semibold text-indigo-300">{c ? fmt.pct2(c.roc) : '—'}</td>
                         <td className="px-3 py-2 font-mono text-indigo-200">{c ? fmt.pct1(c.rocAnnualized) : '—'}</td>
+                        <td className="px-3 py-2 font-mono font-bold text-center">
+                          {row.wheelScore != null ? (
+                            <span className={
+                              row.wheelScore >= 70 ? 'text-green-400' :
+                              row.wheelScore >= 50 ? 'text-yellow-400' :
+                              'text-red-400'
+                            }>
+                              {row.wheelScore}
+                            </span>
+                          ) : '—'}
+                        </td>
                         <td className={`px-3 py-2 font-mono text-xs ${earningsWarn ? 'text-orange-400 font-semibold' : 'text-gray-500'}`}>
                           {row.earningsDate ?? '—'}{earningsWarn && <span className="ml-1">⚠</span>}
                         </td>

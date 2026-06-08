@@ -145,6 +145,27 @@ def _parse_earnings(t: yf.Ticker) -> Optional[date]:
     return None
 
 
+def _hv30(t: yf.Ticker) -> Optional[float]:
+    """
+    30-day realised (historical) volatility, annualised.
+    Uses the last 30 daily log-returns from ~60 days of price history.
+    Returns a decimal (e.g. 0.85 for 85% HV).
+    """
+    try:
+        import numpy as np
+        hist = t.history(period="60d")
+        if hist.empty or len(hist) < 20:
+            return None
+        closes = hist["Close"].dropna()
+        log_ret = np.log(closes / closes.shift(1)).dropna()
+        sample = log_ret.tail(30)
+        if len(sample) < 10:
+            return None
+        return float(sample.std() * np.sqrt(252))
+    except Exception:
+        return None
+
+
 def _iv30_approx(t: yf.Ticker, price: float) -> Optional[float]:
     """Average ATM put IV from nearest expiration >= 20 DTE."""
     try:
@@ -189,6 +210,7 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
 
     earnings_date = _parse_earnings(t)
     iv30 = _iv30_approx(t, price) if price else None
+    hv30 = _hv30(t)
 
     stock = {
         "symbol": symbol,
@@ -196,6 +218,7 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
         "marketCap": info.get("marketCap"),
         "sector": info.get("sector"),
         "iv30": round(iv30 * 100, 2) if iv30 else None,
+        "hv30": round(hv30 * 100, 2) if hv30 else None,
         "earningsDate": earnings_date.isoformat() if earnings_date else None,
         "week52High": info.get("fiftyTwoWeekHigh"),
         "week52Low": info.get("fiftyTwoWeekLow"),
@@ -516,5 +539,90 @@ def scan_watchlist(watchlist: list[str], config: dict, max_workers: int = 6) -> 
                 results[i] = {"symbol": sym, "error": True, "errorMessage": "timeout"}
             except Exception as e:
                 results[i] = {"symbol": sym, "error": True, "errorMessage": str(e)}
+
+    return results
+
+
+def score_results(results: list[dict]) -> list[dict]:
+    """
+    Compute wheelScore (0-100) for each result using cross-watchlist normalisation.
+    Must be called AFTER scan_watchlist so all symbols' data is available.
+
+    Components
+    ----------
+    IV Score        30 pts  – iv30 normalised across watchlist
+    Seller's Edge   20 pts  – (iv30 - hv30) > 0 signals rich premium
+    ROC Score       25 pts  – contract ROC normalised across watchlist
+    Liquidity       15 pts  – contract openInterest normalised across watchlist
+    Earnings Safety 10 pts  – how far earnings are from expiration
+    """
+    valid = [r for r in results if not r.get("error") and r.get("contract")]
+
+    if not valid:
+        for r in results:
+            r["wheelScore"] = None
+        return results
+
+    # Collect finite values for per-metric normalisation
+    iv30s = [r["iv30"] for r in valid if r.get("iv30")]
+    rocs  = [r["contract"]["roc"] for r in valid if r["contract"].get("roc")]
+    ois   = [r["contract"]["openInterest"] for r in valid
+             if r["contract"].get("openInterest")]
+
+    def norm(val, pool: list) -> float:
+        """Linear normalise val into [0, 1] given the observed pool."""
+        if not pool or len(pool) < 2:
+            return 0.5
+        lo, hi = min(pool), max(pool)
+        if hi == lo:
+            return 0.5
+        return max(0.0, min(1.0, (val - lo) / (hi - lo)))
+
+    for r in results:
+        if r.get("error") or not r.get("contract"):
+            r["wheelScore"] = None
+            continue
+
+        c = r["contract"]
+
+        # 1. IV score (30 pts) — higher IV favours premium sellers
+        iv = r.get("iv30") or 0.0
+        iv_score = norm(iv, iv30s) * 30
+
+        # 2. Seller's Edge (20 pts) — IV premium over realised vol
+        hv = r.get("hv30") or 0.0
+        edge = iv - hv                         # both in percent-units (e.g. 85.0)
+        if edge > 0:
+            # scale: full 20 pts at a 20-point IV-HV spread; cap at 1.0
+            edge_score = min(1.0, edge / 20.0) * 20
+        else:
+            edge_score = 0.0
+
+        # 3. ROC score (25 pts)
+        roc = c.get("roc") or 0.0
+        roc_score = norm(roc, rocs) * 25
+
+        # 4. Liquidity score (15 pts)
+        oi = c.get("openInterest") or 0
+        oi_score = norm(oi, ois) * 15
+
+        # 5. Earnings Safety (10 pts)
+        earnings_date_str = r.get("earningsDate")
+        earnings_in_window = c.get("earningsInWindow", False)
+        if earnings_in_window:
+            earn_score = 0.0
+        elif not earnings_date_str:
+            earn_score = 10.0                  # no known earnings — safest
+        else:
+            days_away = (date.fromisoformat(earnings_date_str) - date.today()).days
+            if days_away > 45:
+                earn_score = 10.0
+            elif days_away >= 30:
+                earn_score = 5.0
+            else:
+                earn_score = 0.0
+
+        total = iv_score + edge_score + roc_score + oi_score + earn_score
+        r["wheelScore"] = round(total, 1)
 
     return results
