@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 // In production (npm run build) set REACT_APP_API_URL in .env.production.
 // In development the CRA proxy (package.json "proxy") forwards /api calls,
 // so we use an empty string and rely on relative paths.
-const API = process.env.REACT_APP_API_URL || '';
+const API = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
