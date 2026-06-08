@@ -126,6 +126,7 @@ def _to_date(val) -> Optional[date]:
 
 
 def _parse_earnings(t: yf.Ticker) -> Optional[date]:
+    """Return the next future earnings date, or None if unknown / already passed."""
     try:
         cal = t.calendar
         if cal is None:
@@ -133,9 +134,12 @@ def _parse_earnings(t: yf.Ticker) -> Optional[date]:
         if isinstance(cal, dict):
             ed = cal.get("Earnings Date")
             if ed:
-                return _to_date(ed[0] if isinstance(ed, list) else ed)
+                d = _to_date(ed[0] if isinstance(ed, list) else ed)
+                # yfinance often returns the most-recent past date; discard it
+                return d if d and d > date.today() else None
         elif hasattr(cal, "columns") and "Earnings Date" in cal.columns:
-            return _to_date(cal["Earnings Date"].iloc[0])
+            d = _to_date(cal["Earnings Date"].iloc[0])
+            return d if d and d > date.today() else None
     except Exception:
         pass
     return None
