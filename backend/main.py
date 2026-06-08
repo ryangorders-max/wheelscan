@@ -11,6 +11,38 @@ from data import scan_watchlist, get_stock_info, get_heatmap
 CONFIG_PATH    = Path(__file__).parent / "config.json"
 POSITIONS_PATH = Path(__file__).parent / "positions.json"
 
+DEFAULT_CONFIG = {
+    "collateralCap": 12000,
+    "minROC": 1.5,
+    "targetROC": 2.5,
+    "targetDelta": 0.20,
+    "dteLow": 21,
+    "dteHigh": 35,
+    "targetDTE": 30,
+    "earningsBufferDays": 7,
+    "minIVRank": 30,
+    "minOpenInterest": 500,
+    "watchlist": [
+        {"symbol": "RKLB", "entryCondition": "Any", "notes": ""},
+        {"symbol": "ASTS", "entryCondition": "Any", "notes": ""},
+        {"symbol": "PLTR", "entryCondition": "Any", "notes": ""},
+        {"symbol": "HOOD", "entryCondition": "Any", "notes": ""},
+        {"symbol": "COIN", "entryCondition": "Any", "notes": ""},
+        {"symbol": "MARA", "entryCondition": "Any", "notes": ""},
+        {"symbol": "CLSK", "entryCondition": "Any", "notes": ""},
+        {"symbol": "APP",  "entryCondition": "Any", "notes": ""},
+    ],
+}
+
+def _bootstrap() -> None:
+    """Create data files with defaults if they don't exist (first deploy)."""
+    if not CONFIG_PATH.exists():
+        CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2))
+    if not POSITIONS_PATH.exists():
+        POSITIONS_PATH.write_text("[]")
+
+_bootstrap()
+
 app = FastAPI(title="WheelScan API")
 
 app.add_middleware(
@@ -57,8 +89,6 @@ def _normalize_watchlist(raw: list) -> list[dict]:
 
 
 def read_config() -> dict:
-    if not CONFIG_PATH.exists():
-        raise HTTPException(status_code=500, detail="config.json not found")
     with CONFIG_PATH.open() as f:
         data = json.load(f)
     data["watchlist"] = _normalize_watchlist(data.get("watchlist", []))
