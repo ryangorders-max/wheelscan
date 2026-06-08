@@ -8,38 +8,25 @@ from typing import List, Optional
 
 from data import scan_watchlist, get_stock_info, get_heatmap
 
-CONFIG_PATH    = Path(__file__).parent / "config.json"
-POSITIONS_PATH = Path(__file__).parent / "positions.json"
+BASE_DIR       = Path(__file__).parent
+CONFIG_PATH    = BASE_DIR / "config.json"
+POSITIONS_PATH = BASE_DIR / "positions.json"
+CONFIG_DEFAULT    = BASE_DIR / "config.default.json"
+POSITIONS_DEFAULT = BASE_DIR / "positions.default.json"
 
-DEFAULT_CONFIG = {
-    "collateralCap": 12000,
-    "minROC": 1.5,
-    "targetROC": 2.5,
-    "targetDelta": 0.20,
-    "dteLow": 21,
-    "dteHigh": 35,
-    "targetDTE": 30,
-    "earningsBufferDays": 7,
-    "minIVRank": 30,
-    "minOpenInterest": 500,
-    "watchlist": [
-        {"symbol": "RKLB", "entryCondition": "Any", "notes": ""},
-        {"symbol": "ASTS", "entryCondition": "Any", "notes": ""},
-        {"symbol": "PLTR", "entryCondition": "Any", "notes": ""},
-        {"symbol": "HOOD", "entryCondition": "Any", "notes": ""},
-        {"symbol": "COIN", "entryCondition": "Any", "notes": ""},
-        {"symbol": "MARA", "entryCondition": "Any", "notes": ""},
-        {"symbol": "CLSK", "entryCondition": "Any", "notes": ""},
-        {"symbol": "APP",  "entryCondition": "Any", "notes": ""},
-    ],
-}
 
 def _bootstrap() -> None:
-    """Create data files with defaults if they don't exist (first deploy)."""
+    """
+    Seed live data files from their committed defaults on first deploy.
+    Subsequent deploys leave existing user data untouched.
+    """
     if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2))
+        src = CONFIG_DEFAULT if CONFIG_DEFAULT.exists() else None
+        CONFIG_PATH.write_text(src.read_text() if src else "{}")
     if not POSITIONS_PATH.exists():
-        POSITIONS_PATH.write_text("[]")
+        src = POSITIONS_DEFAULT if POSITIONS_DEFAULT.exists() else None
+        POSITIONS_PATH.write_text(src.read_text() if src else "[]")
+
 
 _bootstrap()
 

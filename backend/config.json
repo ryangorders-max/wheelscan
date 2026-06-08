@@ -1,0 +1,27 @@
+{
+  "collateralCap": 24500,
+  "minROC": 1.5,
+  "targetROC": 2.5,
+  "targetDelta": 0.2,
+  "dteLow": 21,
+  "dteHigh": 35,
+  "targetDTE": 30,
+  "earningsBufferDays": 7,
+  "minIVRank": 30,
+  "minOpenInterest": 500,
+  "watchlist": [
+    "RKLB",
+    "ASTS",
+    "PLTR",
+    "HOOD",
+    "IREN",
+    "COIN",
+    "MARA",
+    "CLSK",
+    "JOBY",
+    "VCX",
+    "APP",
+    "APPL",
+    "CRSP"
+  ]
+}

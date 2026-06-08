@@ -1,0 +1,17 @@
+[
+  {
+    "id": "26a00df7-881d-425b-9e92-76a70dcd11ed",
+    "symbol": "ASTS",
+    "type": "CSP",
+    "strike": 75.0,
+    "expiration": "2026-07-10",
+    "premium": 4.68,
+    "openDate": "2026-06-07",
+    "collateral": 7500.0,
+    "costBasis": null,
+    "status": "open",
+    "closeDate": null,
+    "closePremium": null,
+    "notes": ""
+  }
+]

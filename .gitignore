@@ -9,9 +9,11 @@ __pycache__/
 .env
 .env.local
 
-# Data files (local state, not committed)
-backend/config.json
-backend/positions.json
+# Data files are committed as *.default.json; live copies are gitignored
+# to avoid overwriting user data on pull. Railway persists the volume.
+# Uncomment these lines if you want to exclude live data files locally:
+# backend/config.json
+# backend/positions.json
 
 # Node
 node_modules/

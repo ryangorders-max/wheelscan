@@ -1,0 +1,23 @@
+{
+  "collateralCap": 12000,
+  "minROC": 1.5,
+  "targetROC": 2.5,
+  "targetDelta": 0.20,
+  "dteLow": 21,
+  "dteHigh": 35,
+  "targetDTE": 30,
+  "earningsBufferDays": 7,
+  "minIVRank": 30,
+  "minOpenInterest": 500,
+  "watchlist": [
+    {"symbol": "RKLB", "entryCondition": "Any", "notes": ""},
+    {"symbol": "ASTS", "entryCondition": "Any", "notes": ""},
+    {"symbol": "PLTR", "entryCondition": "Any", "notes": ""},
+    {"symbol": "HOOD", "entryCondition": "Any", "notes": ""},
+    {"symbol": "IREN", "entryCondition": "Any", "notes": ""},
+    {"symbol": "COIN", "entryCondition": "Any", "notes": ""},
+    {"symbol": "MARA", "entryCondition": "Any", "notes": ""},
+    {"symbol": "CLSK", "entryCondition": "Any", "notes": ""},
+    {"symbol": "APP",  "entryCondition": "Any", "notes": ""}
+  ]
+}
