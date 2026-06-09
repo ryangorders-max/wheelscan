@@ -1,31 +1,23 @@
 import json
-import uuid
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 
 from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings
 
-BASE_DIR       = Path(__file__).parent
-CONFIG_PATH    = BASE_DIR / "config.json"
-POSITIONS_PATH = BASE_DIR / "positions.json"
-CONFIG_DEFAULT    = BASE_DIR / "config.default.json"
-POSITIONS_DEFAULT = BASE_DIR / "positions.default.json"
+BASE_DIR           = Path(__file__).parent
+CONFIG_PATH        = BASE_DIR / "config.json"
+CONFIG_DEFAULT     = BASE_DIR / "config.default.json"
+POSITIONS_PATH     = BASE_DIR / "positions.json"  # read-only for earnings warnings
 
 
 def _bootstrap() -> None:
-    """
-    Seed live data files from their committed defaults on first deploy.
-    Subsequent deploys leave existing user data untouched.
-    """
+    """Seed config.json from defaults on first deploy; leave existing data alone."""
     if not CONFIG_PATH.exists():
         src = CONFIG_DEFAULT if CONFIG_DEFAULT.exists() else None
         CONFIG_PATH.write_text(src.read_text() if src else "{}")
-    if not POSITIONS_PATH.exists():
-        src = POSITIONS_DEFAULT if POSITIONS_DEFAULT.exists() else None
-        POSITIONS_PATH.write_text(src.read_text() if src else "[]")
 
 
 _bootstrap()
@@ -121,8 +113,12 @@ def get_earnings_warnings():
     Check open positions for earnings dates close to their expiration.
     Returns a list of warning objects — no scan needed, runs on page load.
     """
-    positions = _read_positions()
-    open_pos  = [p for p in positions if p.get("status") == "open"]
+    if POSITIONS_PATH.exists():
+        with POSITIONS_PATH.open() as f:
+            positions = json.load(f)
+    else:
+        positions = []
+    open_pos = [p for p in positions if p.get("status") == "open"]
     return earnings_warnings(open_pos)
 
 
@@ -131,83 +127,3 @@ def heatmap(symbol: str):
     """Wide-range options surface for the heatmap view (DTE 7-60, all strikes)."""
     cfg = read_config()
     return get_heatmap(symbol.upper(), cfg)
-
-
-# ── Positions ────────────────────────────────────────────────────────────────
-
-class Position(BaseModel):
-    symbol:       str
-    type:         str           # "CSP" or "CC"
-    strike:       float
-    expiration:   str           # ISO date string
-    premium:      float
-    openDate:     str           # ISO date string
-    collateral:   float
-    costBasis:    Optional[float] = None
-    status:       str = "open"  # "open" | "closed" | "assigned"
-    closeDate:    Optional[str]   = None
-    closePremium: Optional[float] = None
-    notes:        str = ""
-
-
-class PositionUpdate(BaseModel):
-    symbol:       Optional[str]   = None
-    type:         Optional[str]   = None
-    strike:       Optional[float] = None
-    expiration:   Optional[str]   = None
-    premium:      Optional[float] = None
-    openDate:     Optional[str]   = None
-    collateral:   Optional[float] = None
-    costBasis:    Optional[float] = None
-    status:       Optional[str]   = None
-    closeDate:    Optional[str]   = None
-    closePremium: Optional[float] = None
-    notes:        Optional[str]   = None
-
-
-def _read_positions() -> list:
-    if not POSITIONS_PATH.exists():
-        return []
-    with POSITIONS_PATH.open() as f:
-        return json.load(f)
-
-
-def _write_positions(data: list) -> None:
-    with POSITIONS_PATH.open("w") as f:
-        json.dump(data, f, indent=2)
-
-
-@app.get("/positions")
-def get_positions():
-    return _read_positions()
-
-
-@app.post("/positions", status_code=201)
-def add_position(pos: Position):
-    positions = _read_positions()
-    record = {"id": str(uuid.uuid4()), **pos.model_dump()}
-    positions.append(record)
-    _write_positions(positions)
-    return record
-
-
-@app.put("/positions/{pos_id}")
-def update_position(pos_id: str, update: PositionUpdate):
-    positions = _read_positions()
-    for i, p in enumerate(positions):
-        if p["id"] == pos_id:
-            patch = {k: v for k, v in update.model_dump().items() if v is not None}
-            positions[i] = {**p, **patch}
-            _write_positions(positions)
-            return positions[i]
-    raise HTTPException(status_code=404, detail="Position not found")
-
-
-@app.delete("/positions/{pos_id}", status_code=204)
-def delete_position(pos_id: str):
-    positions = _read_positions()
-    updated = [p for p in positions if p["id"] != pos_id]
-    if len(updated) == len(positions):
-        raise HTTPException(status_code=404, detail="Position not found")
-    _write_positions(updated)
-    return None
