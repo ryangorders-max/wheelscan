@@ -893,7 +893,8 @@ function WatchlistTab() {
   return (
     <div className="flex-1 overflow-auto px-6 py-6 max-w-2xl">
       <h2 className="text-sm font-semibold text-gray-300 mb-1">Watchlist</h2>
-      <p className="text-xs text-gray-600 mb-5">Changes save immediately. The Screener uses this list on next scan.</p>
+      <p className="text-xs text-gray-600 mb-1">Changes save immediately. The Screener uses this list on next scan.</p>
+      <p className="text-xs text-gray-700 mb-5">⚠ On the hosted app, watchlist changes reset after a redeploy. To make permanent changes, edit <code className="text-gray-600">config.default.json</code> in the repo.</p>
 
       {/* ── add input ── */}
       <div className="flex gap-2 mb-2">
