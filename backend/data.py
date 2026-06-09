@@ -554,6 +554,57 @@ def scan_watchlist(watchlist: list[str], config: dict, max_workers: int = 6) -> 
     return results
 
 
+def earnings_warnings(open_positions: list[dict]) -> list[dict]:
+    """
+    For each open position, fetch the next earnings date and flag it when
+    earnings fall within 14 days before OR 7 days after expiration.
+
+    Returns a list of warning dicts:
+      { symbol, expiration, earningsDate, diffDays, warningType }
+    warningType: "before" (earnings before expiry ≤14d) | "after" (≤7d after expiry)
+    """
+    if not open_positions:
+        return []
+
+    def _check(pos: dict) -> Optional[dict]:
+        try:
+            t = yf.Ticker(pos["symbol"])
+            ed = _parse_earnings(t)
+            if not ed:
+                return None
+            exp_date = _to_date(pos["expiration"])
+            if not exp_date:
+                return None
+            diff = (ed - exp_date).days  # negative = earnings before expiry
+            if -14 <= diff < 0:
+                wtype = "before"
+            elif 0 <= diff <= 7:
+                wtype = "after"
+            else:
+                return None
+            return {
+                "symbol":       pos["symbol"],
+                "expiration":   pos["expiration"],
+                "earningsDate": ed.isoformat(),
+                "diffDays":     diff,
+                "warningType":  wtype,
+            }
+        except Exception:
+            return None
+
+    results = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {ex.submit(_check, p): p for p in open_positions}
+        for future in futures:
+            try:
+                w = future.result(timeout=8)
+                if w:
+                    results.append(w)
+            except Exception:
+                pass
+    return results
+
+
 def score_results(results: list[dict]) -> list[dict]:
     """
     Compute wheelScore (0-100) for each result using cross-watchlist normalisation.

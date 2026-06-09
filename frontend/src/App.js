@@ -567,6 +567,33 @@ function getValue(row, col) {
   }
 }
 
+// ─── Earnings proximity helper ───────────────────────────────────────────────
+// Returns { icon, colorCls, title } describing how close earnings are to expiry.
+function earningsProximity(earningsDateStr, expirationStr, earningsInWindow) {
+  if (!earningsDateStr) return { icon: null, colorCls: 'text-gray-500', title: '' };
+
+  if (earningsInWindow) {
+    return { icon: '⚠', colorCls: 'text-orange-400 font-semibold', title: 'Earnings inside expiration window' };
+  }
+
+  if (!expirationStr) return { icon: null, colorCls: 'text-gray-500', title: '' };
+
+  const msPerDay = 86400000;
+  const ed  = new Date(earningsDateStr + 'T12:00:00').getTime();
+  const exp = new Date(expirationStr   + 'T12:00:00').getTime();
+  const diff = Math.round((ed - exp) / msPerDay); // negative = earnings before expiry
+
+  if (diff >= 0 && diff <= 7) {
+    // earnings right after expiry — assignment risk if called away into earnings
+    return { icon: '🔔', colorCls: 'text-yellow-400 font-semibold', title: `Earnings ${diff}d after expiry — assignment risk` };
+  }
+  if (diff < 0 && diff >= -14) {
+    // earnings within 14 days before expiry
+    return { icon: '⚠', colorCls: 'text-orange-400 font-semibold', title: `Earnings ${Math.abs(diff)}d before expiry` };
+  }
+  return { icon: null, colorCls: 'text-gray-500', title: '' };
+}
+
 // ─── SCREENER TAB ────────────────────────────────────────────────────────────
 
 function ScreenerTab({ minROC }) {
@@ -577,7 +604,16 @@ function ScreenerTab({ minROC }) {
   const [sortKey,        setSortKey]        = useState('roc');
   const [sortDir,        setSortDir]        = useState('desc');
   const [expandedSymbol, setExpandedSymbol] = useState(null);
+  const [earnWarnings,   setEarnWarnings]   = useState([]);
   const abortRef = useRef(null);
+
+  // fetch earnings warnings from open positions on mount (no scan needed)
+  useEffect(() => {
+    fetch(`${API}/earnings-warnings`)
+      .then(r => r.ok ? r.json() : [])
+      .then(setEarnWarnings)
+      .catch(() => {});
+  }, []);
 
   const runScan = useCallback(async () => {
     if (abortRef.current) abortRef.current.abort();
@@ -646,6 +682,26 @@ function ScreenerTab({ minROC }) {
         )}
       </div>
 
+      {/* earnings risk banner */}
+      {earnWarnings.length > 0 && (
+        <div className="mx-4 mt-3 flex flex-col gap-1.5">
+          {earnWarnings.map((w, i) => (
+            <div key={i} className="flex items-center gap-2 bg-orange-950/40 border border-orange-800/50 rounded-lg px-4 py-2 text-xs text-orange-300">
+              <span className="text-base leading-none">⚠️</span>
+              <span>
+                <span className="font-semibold font-mono">{w.symbol}</span>
+                {' '}— expires <span className="font-mono">{w.expiration}</span>,
+                earnings <span className="font-mono">{w.earningsDate}</span>
+                {w.warningType === 'after'
+                  ? <span className="text-yellow-400 ml-1">(earnings {w.diffDays}d after expiry — assignment risk)</span>
+                  : <span className="text-orange-400 ml-1">(earnings {Math.abs(w.diffDays)}d before expiry)</span>
+                }
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* table */}
       <div className="flex-1 overflow-auto px-4 py-3">
         {!loading && rows.length === 0 && !scanErr && (
@@ -678,8 +734,9 @@ function ScreenerTab({ minROC }) {
                   );
 
                   const c           = row.contract;
-                  const exceedsCap  = c?.exceedsCollateralCap;
+                  const exceedsCap   = c?.exceedsCollateralCap;
                   const earningsWarn = c?.earningsInWindow;
+                  const ep = earningsProximity(row.earningsDate, c?.expiration, earningsWarn);
                   const rowBg = isExpanded
                     ? 'bg-indigo-950/40'
                     : exceedsCap
@@ -717,8 +774,8 @@ function ScreenerTab({ minROC }) {
                             </span>
                           ) : '—'}
                         </td>
-                        <td className={`px-3 py-2 font-mono text-xs ${earningsWarn ? 'text-orange-400 font-semibold' : 'text-gray-500'}`}>
-                          {row.earningsDate ?? '—'}{earningsWarn && <span className="ml-1">⚠</span>}
+                        <td className={`px-3 py-2 font-mono text-xs ${ep.colorCls}`} title={ep.title || undefined}>
+                          {row.earningsDate ?? '—'}{ep.icon && <span className="ml-1">{ep.icon}</span>}
                         </td>
                         <td className="px-3 py-2 text-center">
                           {exceedsCap

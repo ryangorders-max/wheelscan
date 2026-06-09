@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-from data import scan_watchlist, get_stock_info, get_heatmap, score_results
+from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings
 
 BASE_DIR       = Path(__file__).parent
 CONFIG_PATH    = BASE_DIR / "config.json"
@@ -113,6 +113,17 @@ def scan_one(symbol: str):
     cfg = read_config()
     results = scan_watchlist([symbol.upper()], cfg)
     return results[0]
+
+
+@app.get("/earnings-warnings")
+def get_earnings_warnings():
+    """
+    Check open positions for earnings dates close to their expiration.
+    Returns a list of warning objects — no scan needed, runs on page load.
+    """
+    positions = _read_positions()
+    open_pos  = [p for p in positions if p.get("status") == "open"]
+    return earnings_warnings(open_pos)
 
 
 @app.get("/heatmap/{symbol}")
