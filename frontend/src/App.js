@@ -1004,7 +1004,7 @@ function PositionsTab() {
     <div className="flex-1 overflow-auto px-6 py-6 max-w-2xl">
       <h2 className="text-sm font-semibold text-gray-300 mb-1">Positions</h2>
       <p className="text-xs text-gray-600 mb-1">Changes save immediately. The Screener uses this list on next scan. Add a cost basis and share count to run a covered-call scan.</p>
-      <p className="text-xs text-gray-700 mb-5">⚠ On the hosted app, this list — including cost basis — resets to <code className="text-gray-600">config.default.json</code> after every redeploy.</p>
+      <p className="text-xs text-gray-700 mb-5">Positions persist across redeploys as long as a Railway volume is attached to this service. Without one, edits still live in the running container and reset to <code className="text-gray-600">config.default.json</code> on the next deploy.</p>
 
       {/* ── add input ── */}
       <div className="flex gap-2 mb-2">

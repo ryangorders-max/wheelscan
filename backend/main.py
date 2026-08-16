@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,13 +9,21 @@ from typing import List, Optional
 from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings, get_covered_call, get_covered_call_heatmap
 
 BASE_DIR           = Path(__file__).parent
-CONFIG_PATH        = BASE_DIR / "config.json"
+# DATA_DIR points at a persistent Railway volume when RAILWAY_VOLUME_MOUNT_PATH
+# is set (Railway injects this automatically once a volume is attached to the
+# service). Falls back to BASE_DIR for local dev, where redeploys aren't a
+# concern. Without a volume, config.json lives inside the container image and
+# gets wiped back to config.default.json on every deploy — this is what makes
+# it survive.
+DATA_DIR           = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", BASE_DIR))
+CONFIG_PATH        = DATA_DIR / "config.json"
 CONFIG_DEFAULT     = BASE_DIR / "config.default.json"
 POSITIONS_PATH     = BASE_DIR / "positions.json"  # read-only for earnings warnings
 
 
 def _bootstrap() -> None:
     """Seed config.json from defaults on first deploy; leave existing data alone."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_PATH.exists():
         src = CONFIG_DEFAULT if CONFIG_DEFAULT.exists() else None
         CONFIG_PATH.write_text(src.read_text() if src else "{}")
