@@ -3,9 +3,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
-from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings
+from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings, get_covered_call
 
 BASE_DIR           = Path(__file__).parent
 CONFIG_PATH        = BASE_DIR / "config.json"
@@ -36,6 +36,8 @@ class WatchlistItem(BaseModel):
     symbol:         str
     entryCondition: str = "Any"
     notes:          str = ""
+    costBasis:      Optional[float] = None
+    shares:         Optional[int] = None
 
 
 class Config(BaseModel):
@@ -57,12 +59,14 @@ def _normalize_watchlist(raw: list) -> list[dict]:
     out = []
     for item in raw:
         if isinstance(item, str):
-            out.append({"symbol": item, "entryCondition": "Any", "notes": ""})
+            out.append({"symbol": item, "entryCondition": "Any", "notes": "", "costBasis": None, "shares": None})
         else:
             out.append({
                 "symbol":         item.get("symbol", ""),
                 "entryCondition": item.get("entryCondition", "Any"),
                 "notes":          item.get("notes", ""),
+                "costBasis":      item.get("costBasis"),
+                "shares":         item.get("shares"),
             })
     return out
 
@@ -120,6 +124,28 @@ def get_earnings_warnings():
         positions = []
     open_pos = [p for p in positions if p.get("status") == "open"]
     return earnings_warnings(open_pos)
+
+
+class CoveredCallRequest(BaseModel):
+    costBasis:       float
+    shares:          int
+    allowBelowBasis: bool = False
+
+
+@app.post("/covered-call/{symbol}")
+def covered_call(symbol: str, req: CoveredCallRequest):
+    """
+    Best covered-call contract for a position you already own.
+    costBasis = effective per-share cost (strike minus prior premium if assigned from CSP).
+    """
+    cfg = read_config()
+    return get_covered_call(
+        symbol.upper(),
+        req.costBasis,
+        req.shares,
+        cfg,
+        allow_below_basis=req.allowBelowBasis,
+    )
 
 
 @app.get("/heatmap/{symbol}")

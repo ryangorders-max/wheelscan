@@ -104,6 +104,59 @@ function ContractCard({ result, onClose }) {
   );
 }
 
+function CoveredCallCard({ result, onClose }) {
+  if (!result) return null;
+  const { symbol, price, costBasis, shares, unrealizedPnlPct, iv30, earningsDate, contract: c, error, errorMessage } = result;
+  return (
+    <div className="mt-4 bg-gray-800 border border-gray-700 rounded-xl p-4 relative">
+      <button onClick={onClose}
+        className="absolute top-3 right-3 text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
+      {error ? (
+        <p className="text-red-400 text-sm">{symbol}: {errorMessage || 'Error fetching data'}</p>
+      ) : (
+        <>
+          <div className="flex items-baseline gap-3 mb-1">
+            <span className="font-mono font-bold text-white text-lg">{symbol}</span>
+            <span className="font-mono text-gray-400 text-sm">{fmt.dollar(price)}</span>
+            {iv30 != null && <span className="text-xs text-gray-500">IV30 {fmt.pct1(iv30)}</span>}
+            {earningsDate && <span className="text-xs text-gray-500">Earnings {earningsDate}</span>}
+          </div>
+          <div className="flex items-baseline gap-3 mb-3 text-xs text-gray-500">
+            <span>Basis {fmt.dollar(costBasis)}</span>
+            <span>{shares} sh</span>
+            {unrealizedPnlPct != null && (
+              <span className={unrealizedPnlPct >= 0 ? 'text-green-400' : 'text-red-400'}>
+                {unrealizedPnlPct >= 0 ? '+' : ''}{unrealizedPnlPct.toFixed(1)}% unrealized
+              </span>
+            )}
+          </div>
+          {c ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                ['Strike', fmt.dollar(c.strike)], ['Expiration', c.expiration ?? '—'],
+                ['DTE', fmt.num(c.dte)],          ['Premium', fmt.dollar(c.mid)],
+                ['Premium Total', fmt.dollar(c.premiumTotal)],
+                ['ROC (on basis)', fmt.pct2(c.roc)], ['Ann ROC', fmt.pct1(c.rocAnnualized)],
+                ['If Called', fmt.pct2(c.totalReturnIfCalledPct)],
+              ].map(([label, val]) => (
+                <div key={label} className="bg-gray-900 rounded-lg px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div>
+                  <div className="font-mono text-indigo-300 text-sm mt-0.5">{val}</div>
+                </div>
+              ))}
+              {c.belowCostBasis   && <div className="col-span-full text-xs text-red-400 mt-1">⚠️ Strike is below your cost basis — assignment would realize a loss on shares</div>}
+              {c.lowOpenInterest  && <div className="col-span-full text-xs text-yellow-400 mt-1">⚠️ Low open interest</div>}
+              {c.earningsInWindow && <div className="col-span-full text-xs text-orange-400 mt-1">⚠ Earnings fall within expiration window</div>}
+            </div>
+          ) : (
+            <p className="text-gray-500 text-sm">No qualifying contract found{costBasis ? ' at or above cost basis' : ''}.</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── HEATMAP PANEL ───────────────────────────────────────────────────────────
 
 const HEATMAP_METRICS = [
@@ -818,16 +871,19 @@ function ScreenerTab({ minROC }) {
 const ENTRY_CONDITIONS = ['Any', 'Red day', 'IV spike', 'Post-earnings', 'Support level'];
 
 function normaliseItem(item) {
-  if (typeof item === 'string') return { symbol: item, entryCondition: 'Any', notes: '' };
-  return { entryCondition: 'Any', notes: '', ...item };
+  if (typeof item === 'string') return { symbol: item, entryCondition: 'Any', notes: '', costBasis: null, shares: null };
+  return { entryCondition: 'Any', notes: '', costBasis: null, shares: null, ...item };
 }
 
-function WatchlistTab() {
-  const [watchlist,   setWatchlist]   = useState([]);  // [{symbol, entryCondition, notes}]
-  const [input,       setInput]       = useState('');
-  const [inputErr,    setInputErr]    = useState('');
-  const [expandedSym, setExpandedSym] = useState(null);
-  const [scanResults, setScanResults] = useState({});
+function PositionsTab() {
+  const [watchlist,       setWatchlist]       = useState([]);  // [{symbol, entryCondition, notes, costBasis, shares}]
+  const [input,           setInput]           = useState('');
+  const [inputErr,        setInputErr]        = useState('');
+  const [expandedSym,     setExpandedSym]     = useState(null);
+  const [scanResults,     setScanResults]     = useState({});
+  const [ccResults,       setCcResults]       = useState({});   // covered-call results, keyed by symbol
+  const [ccLoading,       setCcLoading]       = useState({});
+  const [allowBelowBasis, setAllowBelowBasis] = useState({});   // per-symbol toggle
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -858,7 +914,7 @@ function WatchlistTab() {
   function handleAdd() {
     const [sym, err] = validate(input);
     if (err) { setInputErr(err); return; }
-    const next = [...watchlist, { symbol: sym, entryCondition: 'Any', notes: '' }];
+    const next = [...watchlist, { symbol: sym, entryCondition: 'Any', notes: '', costBasis: null, shares: null }];
     setWatchlist(next);
     setInput('');
     setInputErr('');
@@ -871,6 +927,7 @@ function WatchlistTab() {
     setWatchlist(next);
     if (expandedSym === sym) setExpandedSym(null);
     setScanResults(prev => { const c = { ...prev }; delete c[sym]; return c; });
+    setCcResults(prev => { const c = { ...prev }; delete c[sym]; return c; });
     persistWatchlist(next).catch(() => {});
   }
 
@@ -890,11 +947,32 @@ function WatchlistTab() {
     }
   }
 
+  async function handleGetCoveredCall(item) {
+    const sym = item.symbol;
+    setCcLoading(prev => ({ ...prev, [sym]: true }));
+    try {
+      const data = await fetch(`${API}/covered-call/${sym}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          costBasis: Number(item.costBasis),
+          shares: Number(item.shares),
+          allowBelowBasis: !!allowBelowBasis[sym],
+        }),
+      }).then(r => r.json());
+      setCcResults(prev => ({ ...prev, [sym]: data }));
+    } catch (e) {
+      setCcResults(prev => ({ ...prev, [sym]: { symbol: sym, error: true, errorMessage: e.message } }));
+    } finally {
+      setCcLoading(prev => ({ ...prev, [sym]: false }));
+    }
+  }
+
   return (
     <div className="flex-1 overflow-auto px-6 py-6 max-w-2xl">
-      <h2 className="text-sm font-semibold text-gray-300 mb-1">Watchlist</h2>
-      <p className="text-xs text-gray-600 mb-1">Changes save immediately. The Screener uses this list on next scan.</p>
-      <p className="text-xs text-gray-700 mb-5">⚠ On the hosted app, watchlist changes reset after a redeploy. To make permanent changes, edit <code className="text-gray-600">config.default.json</code> in the repo.</p>
+      <h2 className="text-sm font-semibold text-gray-300 mb-1">Positions</h2>
+      <p className="text-xs text-gray-600 mb-1">Changes save immediately. The Screener uses this list on next scan. Add a cost basis and share count to run a covered-call scan.</p>
+      <p className="text-xs text-gray-700 mb-5">⚠ On the hosted app, this list — including cost basis — resets to <code className="text-gray-600">config.default.json</code> after every redeploy.</p>
 
       {/* ── add input ── */}
       <div className="flex gap-2 mb-2">
@@ -917,13 +995,14 @@ function WatchlistTab() {
 
       {/* ── chips ── */}
       {watchlist.length === 0 ? (
-        <p className="text-gray-600 text-sm mt-4">No symbols in watchlist.</p>
+        <p className="text-gray-600 text-sm mt-4">No symbols yet.</p>
       ) : (
         <div className="flex flex-col gap-2 mt-4">
           {watchlist.map(item => {
-            const { symbol: sym, entryCondition, notes } = item;
-            const isExpanded = expandedSym === sym;
-            const hasInfo    = (entryCondition && entryCondition !== 'Any') || notes;
+            const { symbol: sym, entryCondition, notes, costBasis, shares } = item;
+            const isExpanded  = expandedSym === sym;
+            const hasInfo     = (entryCondition && entryCondition !== 'Any') || notes || costBasis;
+            const hasPosition = costBasis && shares;
 
             return (
               <div key={sym}
@@ -937,6 +1016,11 @@ function WatchlistTab() {
                     className="flex items-center gap-2 flex-1 min-w-0 text-left"
                   >
                     <span className="font-mono font-semibold text-white text-sm">{sym}</span>
+                    {hasPosition && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-300">
+                        {shares}sh @ {fmt.dollar(costBasis)}
+                      </span>
+                    )}
                     {!isExpanded && hasInfo && (
                       <span className="text-[10px] text-gray-500 truncate flex items-center gap-1">
                         {entryCondition !== 'Any' && (
@@ -949,10 +1033,19 @@ function WatchlistTab() {
                     <span className={`ml-auto text-[10px] text-gray-600 transition-transform inline-block ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
                   </button>
 
+                  {hasPosition && (
+                    <button
+                      onClick={e => { e.stopPropagation(); handleGetCoveredCall(item); }}
+                      disabled={ccLoading[sym]}
+                      title={`Covered call scan for ${sym}`}
+                      className="ml-2 px-2 py-0.5 text-xs rounded-full bg-emerald-800 hover:bg-emerald-600 text-emerald-200 disabled:opacity-40 transition-colors">
+                      {ccLoading[sym] ? '…' : 'CC'}
+                    </button>
+                  )}
                   <button
                     onClick={e => { e.stopPropagation(); handleScanOne(sym); }}
                     disabled={scanResults[sym] === 'loading'}
-                    title={`Scan ${sym}`}
+                    title={`CSP scan ${sym}`}
                     className="ml-2 px-2 py-0.5 text-xs rounded-full bg-indigo-800 hover:bg-indigo-600 text-indigo-200 disabled:opacity-40 transition-colors">
                     {scanResults[sym] === 'loading' ? '…' : '▶'}
                   </button>
@@ -966,7 +1059,7 @@ function WatchlistTab() {
 
                 {/* expanded fields */}
                 {isExpanded && (
-                  <div className="px-3 pb-3 pt-1 border-t border-gray-700 flex gap-3 items-end">
+                  <div className="px-3 pb-3 pt-1 border-t border-gray-700 flex flex-wrap gap-3 items-end">
                     <div className="flex flex-col gap-1">
                       <label className="text-[10px] uppercase tracking-wide text-gray-500">Entry Condition</label>
                       <select
@@ -977,7 +1070,37 @@ function WatchlistTab() {
                         {ENTRY_CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </div>
-                    <div className="flex flex-col gap-1 flex-1">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] uppercase tracking-wide text-gray-500">Cost Basis ($/sh)</label>
+                      <input
+                        type="number" step="0.01" min="0"
+                        value={costBasis ?? ''}
+                        onChange={e => handleChipUpdate(sym, { costBasis: e.target.value === '' ? null : Number(e.target.value) })}
+                        placeholder="e.g. 81.15"
+                        className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-24"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] uppercase tracking-wide text-gray-500">Shares</label>
+                      <input
+                        type="number" step="1" min="0"
+                        value={shares ?? ''}
+                        onChange={e => handleChipUpdate(sym, { shares: e.target.value === '' ? null : Number(e.target.value) })}
+                        placeholder="100"
+                        className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-20"
+                      />
+                    </div>
+                    {hasPosition && (
+                      <label className="flex items-center gap-1.5 text-[10px] text-gray-500 pb-1.5">
+                        <input
+                          type="checkbox"
+                          checked={!!allowBelowBasis[sym]}
+                          onChange={e => setAllowBelowBasis(prev => ({ ...prev, [sym]: e.target.checked }))}
+                        />
+                        Allow strikes below basis
+                      </label>
+                    )}
+                    <div className="flex flex-col gap-1 flex-1 min-w-[8rem]">
                       <label className="text-[10px] uppercase tracking-wide text-gray-500">Notes</label>
                       <input
                         type="text"
@@ -1001,9 +1124,18 @@ function WatchlistTab() {
           .filter(w => scanResults[w.symbol] && scanResults[w.symbol] !== 'loading')
           .map(w => (
             <ContractCard
-              key={w.symbol}
+              key={`csp-${w.symbol}`}
               result={scanResults[w.symbol]}
               onClose={() => setScanResults(prev => { const c = { ...prev }; delete c[w.symbol]; return c; })}
+            />
+          ))}
+        {watchlist
+          .filter(w => ccResults[w.symbol])
+          .map(w => (
+            <CoveredCallCard
+              key={`cc-${w.symbol}`}
+              result={ccResults[w.symbol]}
+              onClose={() => setCcResults(prev => { const c = { ...prev }; delete c[w.symbol]; return c; })}
             />
           ))}
       </div>
@@ -1094,7 +1226,7 @@ export default function App() {
 
           {/* tab switcher */}
           <div className="ml-auto flex items-center gap-0.5 bg-gray-800 rounded-lg p-0.5">
-            {['screener', 'watchlist'].map(t => (
+            {['screener', 'positions'].map(t => (
               <button key={t} onClick={() => setTab(t)}
                 className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors capitalize
                   ${tab === t ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
@@ -1107,7 +1239,7 @@ export default function App() {
 
       {/* ── TAB CONTENT ── */}
       {tab === 'screener'   && <ScreenerTab minROC={minROC} />}
-      {tab === 'watchlist'  && <WatchlistTab />}
+      {tab === 'positions'  && <PositionsTab />}
     </div>
   );
 }

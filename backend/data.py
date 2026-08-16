@@ -41,6 +41,17 @@ def bs_put_delta(S: float, K: float, T: float, r: float, sigma: float) -> Option
     except (ValueError, ZeroDivisionError):
         return None
 
+def bs_call_delta(S: float, K: float, T: float, r: float, sigma: float) -> Optional[float]:
+    """Black-Scholes delta for a European call option. Returns value in (0, 1)."""
+    if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
+        return None
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        return round(_norm_cdf(d1), 4)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
 SYMBOL_TIMEOUT = 10  # seconds per symbol
 
 
@@ -388,6 +399,183 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
             best = min(pool, key=lambda c: (oi_pen(c), dte_dist(c), -(c["roc"] or 0)))
 
     return {**stock, "contract": best, "error": False}
+
+
+def _fetch_covered_call(
+    symbol: str,
+    cost_basis: float,
+    shares: int,
+    config: dict,
+    allow_below_basis: bool = False,
+) -> dict:
+    """
+    Fetches stock info + best covered-call contract for one position.
+
+    ROC is premium / (cost_basis * 100) — yield on capital already deployed.
+    totalReturnIfCalled includes capital gain/loss to strike + premium.
+    Strikes below cost_basis excluded by default (allow_below_basis overrides).
+    """
+    t = yf.Ticker(symbol)
+
+    fi = t.fast_info
+    info = t.info or {}
+    price = (
+        fi.get("lastPrice")
+        or fi.get("previousClose")
+        or info.get("currentPrice")
+    )
+    price = float(price) if price else None
+
+    earnings_date = _parse_earnings(t)
+    iv30 = _iv30_approx(t, price) if price else None
+
+    stock = {
+        "symbol": symbol,
+        "price": round(price, 2) if price else None,
+        "costBasis": cost_basis,
+        "shares": shares,
+        "iv30": round(iv30 * 100, 2) if iv30 else None,
+        "earningsDate": earnings_date.isoformat() if earnings_date else None,
+        "unrealizedPnlPct": (
+            round((price - cost_basis) / cost_basis * 100, 2)
+            if price and cost_basis else None
+        ),
+    }
+
+    dte_low = config["dteLow"]
+    dte_high = config["dteHigh"]
+    target_dte = config.get("targetDTE", (dte_low + dte_high) // 2)
+    min_oi = config["minOpenInterest"]
+    earnings_buffer = config["earningsBufferDays"]
+    target_delta = config["targetDelta"]
+
+    today = date.today()
+    contracts = []
+    contract_lots = shares // 100
+
+    for exp_str in (t.options or []):
+        exp_date = _to_date(exp_str)
+        if exp_date is None:
+            continue
+        dte = (exp_date - today).days
+        if not (dte_low <= dte <= dte_high):
+            continue
+
+        earnings_in_window = False
+        if earnings_date:
+            days_before_exp = (exp_date - earnings_date).days
+            if 0 <= days_before_exp <= earnings_buffer:
+                continue
+            if earnings_date <= exp_date:
+                earnings_in_window = True
+
+        try:
+            calls = t.option_chain(exp_str).calls
+        except Exception:
+            continue
+
+        if calls.empty:
+            continue
+
+        for _, row in calls.iterrows():
+            strike = _safe_float(row.get("strike"))
+
+            below_basis = strike < cost_basis
+            if below_basis and not allow_below_basis:
+                continue
+
+            oi = _safe_int(row.get("openInterest"))
+            below_min_oi = oi < min_oi
+
+            bid = _safe_float(row.get("bid"))
+            ask = _safe_float(row.get("ask"))
+            mid = round((bid + ask) / 2, 4)
+            if mid <= 0:
+                continue
+
+            _iv_raw = _safe_float(row.get("impliedVolatility"))
+            iv = _iv_raw if _iv_raw > 0 else None
+
+            delta = None
+            raw_delta = row.get("delta")
+            if raw_delta is not None and not (
+                isinstance(raw_delta, float) and math.isnan(raw_delta)
+            ):
+                delta = round(float(raw_delta), 4)
+
+            if delta is None and iv and price and strike and dte:
+                delta = bs_call_delta(
+                    S=price, K=strike, T=dte / 365.0, r=0.045, sigma=iv,
+                )
+                if delta is not None:
+                    delta = round(delta, 4)
+
+            roc = round((mid / cost_basis) * 100, 4) if cost_basis else None
+            roc_ann = round(roc * (365 / dte), 4) if (roc is not None and dte) else None
+
+            capital_gain_per_share = strike - cost_basis
+            total_return_if_called = round(
+                ((capital_gain_per_share + mid) / cost_basis) * 100, 4
+            ) if cost_basis else None
+
+            premium_total = round(mid * 100 * max(contract_lots, 1), 2)
+
+            contracts.append({
+                "strike": strike,
+                "expiration": exp_str,
+                "dte": dte,
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+                "delta": delta,
+                "belowCostBasis": below_basis,
+                "lowOpenInterest": below_min_oi,
+                "roc": roc,
+                "rocAnnualized": roc_ann,
+                "totalReturnIfCalledPct": total_return_if_called,
+                "premiumTotal": premium_total,
+                "earningsInWindow": earnings_in_window,
+                "openInterest": oi,
+                "impliedVolatility": round(iv * 100, 2) if iv else None,
+            })
+
+    def oi_pen(c):   return 1 if c.get("lowOpenInterest") else 0
+    def dte_dist(c): return abs(c["dte"] - target_dte)
+
+    best = None
+    if contracts:
+        with_delta = [c for c in contracts if c["delta"] is not None]
+        pool = with_delta if with_delta else contracts
+        best = min(
+            pool,
+            key=lambda c: (
+                abs((c["delta"] or target_delta) - target_delta),
+                oi_pen(c),
+                dte_dist(c),
+                -(c["roc"] or 0),
+            ),
+        )
+
+    return {**stock, "contract": best, "candidateCount": len(contracts), "error": False}
+
+
+def get_covered_call(
+    symbol: str,
+    cost_basis: float,
+    shares: int,
+    config: dict,
+    allow_below_basis: bool = False,
+) -> dict:
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(
+            _fetch_covered_call, symbol, cost_basis, shares, config, allow_below_basis
+        )
+        try:
+            return future.result(timeout=SYMBOL_TIMEOUT)
+        except FuturesTimeout:
+            return {"symbol": symbol, "price": None, "contract": None, "error": "timeout"}
+        except Exception as e:
+            return {"symbol": symbol, "price": None, "contract": None, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
