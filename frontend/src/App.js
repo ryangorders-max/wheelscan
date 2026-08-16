@@ -166,6 +166,13 @@ const HEATMAP_METRICS = [
   { key: 'impliedVolatility',label: 'IV',        fmt: v => `${v.toFixed(0)}%` },
 ];
 
+const CC_HEATMAP_METRICS = [
+  { key: 'roc',                    label: 'ROC %',     fmt: v => `${v.toFixed(2)}%` },
+  { key: 'rocAnnualized',          label: 'Ann ROC %', fmt: v => `${v.toFixed(1)}%` },
+  { key: 'mid',                    label: 'Premium',   fmt: v => `$${v.toFixed(2)}`  },
+  { key: 'totalReturnIfCalledPct', label: 'If Called', fmt: v => `${v.toFixed(1)}%` },
+];
+
 // left-border accent colors for pinned cards (index 0-3)
 const PIN_COLORS = [
   { border: '#6366f1', label: 'indigo' },
@@ -185,11 +192,21 @@ const DETAIL_FIELDS = [
   { key: 'delta',            label: 'Delta',      render: c => c.delta != null ? c.delta.toFixed(3) : '—' },
 ];
 
+const CC_DETAIL_FIELDS = [
+  { key: 'dte',                    label: 'DTE',         render: c => fmt.num(c.dte)               },
+  { key: 'mid',                    label: 'Premium',     render: c => fmt.dollar(c.mid)            },
+  { key: 'roc',                    label: 'ROC (basis)', render: c => fmt.pct2(c.roc)              },
+  { key: 'rocAnnualized',          label: 'Ann ROC %',   render: c => fmt.pct1(c.rocAnnualized)    },
+  { key: 'totalReturnIfCalledPct', label: 'If Called',   render: c => fmt.pct2(c.totalReturnIfCalledPct) },
+  { key: 'impliedVolatility',      label: 'IV',          render: c => fmt.pct1(c.impliedVolatility)},
+  { key: 'delta',                  label: 'Delta',       render: c => c.delta != null ? c.delta.toFixed(3) : '—' },
+];
+
 // for the comparison summary: higher = better for all four
 const CMP_FIELDS = ['roc','rocAnnualized','mid','impliedVolatility'];
 const CMP_LABELS = { roc:'ROC %', rocAnnualized:'Ann ROC', mid:'Premium', impliedVolatility:'IV' };
 
-function ContractDetailCard({ symbol, contract: c, accentColor, onClear, onPin, isPinned, showPinButton }) {
+function ContractDetailCard({ symbol, contract: c, accentColor, onClear, onPin, isPinned, showPinButton, fields = DETAIL_FIELDS }) {
   if (!c) return null;
   return (
     <div className="rounded-lg overflow-hidden border border-gray-700" style={{ borderLeftColor: accentColor, borderLeftWidth: 3 }}>
@@ -218,7 +235,7 @@ function ContractDetailCard({ symbol, contract: c, accentColor, onClear, onPin, 
 
       {/* fields grid */}
       <div className="grid grid-cols-2 gap-px bg-gray-800 p-2.5 pt-2">
-        {DETAIL_FIELDS.map(({ key, label, render }) => (
+        {fields.map(({ key, label, render }) => (
           <div key={key} className="flex justify-between items-baseline px-1 py-0.5">
             <span className="text-[10px] text-gray-500 uppercase tracking-wide">{label}</span>
             <span className="font-mono text-xs text-gray-200">{render(c)}</span>
@@ -227,9 +244,10 @@ function ContractDetailCard({ symbol, contract: c, accentColor, onClear, onPin, 
       </div>
 
       {/* warnings */}
-      {(c.exceedsCollateralCap || c.earningsInWindow) && (
+      {(c.exceedsCollateralCap || c.belowCostBasis || c.earningsInWindow) && (
         <div className="px-3 pb-2 flex flex-col gap-0.5">
           {c.exceedsCollateralCap && <span className="text-[10px] text-yellow-400">⚠️ Exceeds collateral cap</span>}
+          {c.belowCostBasis       && <span className="text-[10px] text-red-400">⚠️ Below cost basis</span>}
           {c.earningsInWindow     && <span className="text-[10px] text-orange-400">⚠ Earnings in window</span>}
         </div>
       )}
@@ -272,7 +290,16 @@ function ComparisonSummary({ pinnedContracts }) {
   );
 }
 
-function HeatmapPanel({ symbol, recommendedContract }) {
+function HeatmapPanel({
+  symbol,
+  recommendedContract,
+  fetchUrl = null,
+  metrics = HEATMAP_METRICS,
+  detailFields = DETAIL_FIELDS,
+  capFlagKey = 'exceedsCollateralCap',
+  capLabel = 'exceeds cap',
+  title = 'Options Heatmap',
+}) {
   const [data,       setData]       = useState(null);
   const [loading,    setLoading]    = useState(true);
   const [fetchErr,   setFetchErr]   = useState(null);
@@ -294,13 +321,13 @@ function HeatmapPanel({ symbol, recommendedContract }) {
     setData(null);
     setActiveCell(null);
     setPinned([]);
-    fetch(`${API}/heatmap/${symbol}`)
+    fetch(fetchUrl || `${API}/heatmap/${symbol}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(d  => { if (!cancelled) setData(d); })
       .catch(e => { if (!cancelled) setFetchErr(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [symbol]);
+  }, [symbol, fetchUrl]);
 
   // scroll right panel back to top when active cell changes
   useEffect(() => {
@@ -339,7 +366,7 @@ function HeatmapPanel({ symbol, recommendedContract }) {
     ? strikes.reduce((best, s) => Math.abs(s - data.price) < Math.abs(best - data.price) ? s : best, strikes[0])
     : null;
 
-  const metricDef = HEATMAP_METRICS.find(m => m.key === metric);
+  const metricDef = metrics.find(m => m.key === metric) || metrics[0];
   const allVals   = contracts.map(c => c[metric]).filter(v => v != null && isFinite(v));
   const minVal    = Math.min(...allVals);
   const maxVal    = Math.max(...allVals);
@@ -374,9 +401,9 @@ function HeatmapPanel({ symbol, recommendedContract }) {
       <div className="flex flex-wrap items-center gap-3 px-4 pt-3 pb-2 border-b border-gray-800">
         <span className="font-mono font-bold text-white">{symbol}</span>
         {data.price != null && <span className="font-mono text-gray-400 text-sm">${data.price.toFixed(2)}</span>}
-        <span className="text-gray-600 text-xs">Options Heatmap · DTE 7–60</span>
+        <span className="text-gray-600 text-xs">{title} · DTE 7–60</span>
         <div className="ml-auto flex gap-0.5 bg-gray-800 rounded-lg p-0.5">
-          {HEATMAP_METRICS.map(m => (
+          {metrics.map(m => (
             <button key={m.key} onClick={() => { setMetric(m.key); }}
               className={`px-3 py-1 rounded-md text-xs font-medium transition-colors
                 ${metric === m.key ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
@@ -427,11 +454,12 @@ function HeatmapPanel({ symbol, recommendedContract }) {
                       );
                       const v          = c[metric];
                       const norm       = v != null ? normalize(v) : 0;
-                      const bg         = heatColor(norm, c.exceedsCollateralCap);
+                      const capFlag    = c[capFlagKey];
+                      const bg         = heatColor(norm, capFlag);
                       const rec        = isRec(c);
                       const cellActive = isCellActive(c);
                       const pinned_c   = isPinned(c);
-                      const textColor  = c.exceedsCollateralCap ? '#4b5563' : '#f3f4f6';
+                      const textColor  = capFlag ? '#4b5563' : '#f3f4f6';
                       const outlineCol = rec ? 'rgba(255,255,255,0.85)'
                                        : cellActive ? 'rgba(99,102,241,0.95)'
                                        : pinned_c   ? 'rgba(34,197,94,0.7)'
@@ -483,7 +511,7 @@ function HeatmapPanel({ symbol, recommendedContract }) {
             <span className="ml-1">recommended</span>
             <span className="mx-2 text-gray-800">│</span>
             <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: 'hsl(0,0%,11%)' }} />
-            <span className="ml-1">exceeds cap</span>
+            <span className="ml-1">{capLabel}</span>
             <span className="mx-2 text-gray-800">│</span>
             <span className="text-orange-400 text-xs">⚠</span>
             <span className="ml-0.5">earnings</span>
@@ -514,6 +542,7 @@ function HeatmapPanel({ symbol, recommendedContract }) {
                   showPinButton={false}
                   isPinned={false}
                   onClear={null}
+                  fields={detailFields}
                 />
               </div>
             ) : (
@@ -538,6 +567,7 @@ function HeatmapPanel({ symbol, recommendedContract }) {
                   isPinned={isPinned(activeCell)}
                   onPin={() => pinContract(activeCell)}
                   onClear={() => setActiveCell(null)}
+                  fields={detailFields}
                 />
               </div>
             ) : (
@@ -566,6 +596,7 @@ function HeatmapPanel({ symbol, recommendedContract }) {
                       showPinButton={false}
                       isPinned={true}
                       onClear={() => unpinContract(c)}
+                      fields={detailFields}
                     />
                   ))}
                 </div>
@@ -884,6 +915,7 @@ function PositionsTab() {
   const [ccResults,       setCcResults]       = useState({});   // covered-call results, keyed by symbol
   const [ccLoading,       setCcLoading]       = useState({});
   const [allowBelowBasis, setAllowBelowBasis] = useState({});   // per-symbol toggle
+  const [ccHeatmapSym,    setCcHeatmapSym]    = useState(null); // symbol currently showing the CC heatmap
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -1042,6 +1074,15 @@ function PositionsTab() {
                       {ccLoading[sym] ? '…' : 'CC'}
                     </button>
                   )}
+                  {hasPosition && (
+                    <button
+                      onClick={e => { e.stopPropagation(); setCcHeatmapSym(prev => prev === sym ? null : sym); }}
+                      title={`Covered call heatmap for ${sym}`}
+                      className={`ml-1.5 px-2 py-0.5 text-xs rounded-full transition-colors
+                        ${ccHeatmapSym === sym ? 'bg-emerald-600 text-white' : 'bg-gray-700 hover:bg-emerald-700 text-gray-300'}`}>
+                      ≡
+                    </button>
+                  )}
                   <button
                     onClick={e => { e.stopPropagation(); handleScanOne(sym); }}
                     disabled={scanResults[sym] === 'loading'}
@@ -1111,6 +1152,20 @@ function PositionsTab() {
                       />
                     </div>
                   </div>
+                )}
+
+                {/* covered-call heatmap */}
+                {ccHeatmapSym === sym && hasPosition && (
+                  <HeatmapPanel
+                    symbol={sym}
+                    recommendedContract={ccResults[sym]?.contract}
+                    fetchUrl={`${API}/heatmap/covered-call/${sym}?costBasis=${costBasis}&shares=${shares}&allowBelowBasis=${!!allowBelowBasis[sym]}`}
+                    metrics={CC_HEATMAP_METRICS}
+                    detailFields={CC_DETAIL_FIELDS}
+                    capFlagKey="belowCostBasis"
+                    capLabel="below basis"
+                    title="Covered Call Heatmap"
+                  />
                 )}
               </div>
             );

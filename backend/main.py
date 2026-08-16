@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings, get_covered_call
+from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings, get_covered_call, get_covered_call_heatmap
 
 BASE_DIR           = Path(__file__).parent
 CONFIG_PATH        = BASE_DIR / "config.json"
@@ -145,6 +145,20 @@ def covered_call(symbol: str, req: CoveredCallRequest):
         req.shares,
         cfg,
         allow_below_basis=req.allowBelowBasis,
+    )
+
+
+@app.get("/heatmap/covered-call/{symbol}")
+def covered_call_heatmap(
+    symbol: str,
+    costBasis: float,
+    shares: int,
+    allowBelowBasis: bool = False,
+):
+    """Wide-range call surface for a held position, scored against cost basis."""
+    cfg = read_config()
+    return get_covered_call_heatmap(
+        symbol.upper(), costBasis, shares, cfg, allow_below_basis=allowBelowBasis,
     )
 
 

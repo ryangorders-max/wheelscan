@@ -706,6 +706,136 @@ def _fetch_heatmap(symbol: str, config: dict) -> dict:
     }
 
 
+def _fetch_covered_call_heatmap(
+    symbol: str,
+    cost_basis: float,
+    shares: int,
+    config: dict,
+    allow_below_basis: bool = False,
+) -> dict:
+    """
+    Wide-range covered-call fetch for the heatmap view. Mirrors _fetch_heatmap
+    (DTE 7-60, relaxed OI floor, soft flags not hard filters) but call-side,
+    scored against cost basis the same way _fetch_covered_call is.
+    """
+    t = yf.Ticker(symbol)
+
+    fi = t.fast_info
+    info = t.info or {}
+    price = fi.get("lastPrice") or fi.get("previousClose") or info.get("currentPrice")
+    price = float(price) if price else None
+
+    earnings_date = _parse_earnings(t)
+    min_oi = max(50, config.get("minOpenInterest", 50) // 5)
+    earnings_buffer = config["earningsBufferDays"]
+
+    today = date.today()
+    contracts = []
+
+    for exp_str in (t.options or []):
+        exp_date = _to_date(exp_str)
+        if exp_date is None:
+            continue
+        dte = (exp_date - today).days
+        if not (7 <= dte <= 60):
+            continue
+
+        earnings_in_window = False
+        if earnings_date and earnings_date <= exp_date:
+            days_before_exp = (exp_date - earnings_date).days
+            earnings_in_window = 0 <= days_before_exp <= earnings_buffer or True
+
+        try:
+            calls = t.option_chain(exp_str).calls
+        except Exception:
+            continue
+
+        if calls.empty:
+            continue
+
+        for _, row in calls.iterrows():
+            strike = _safe_float(row.get("strike"))
+
+            below_basis = strike < cost_basis
+            if below_basis and not allow_below_basis:
+                continue
+
+            oi = _safe_int(row.get("openInterest"))
+            below_min_oi = oi < min_oi
+
+            bid = _safe_float(row.get("bid"))
+            ask = _safe_float(row.get("ask"))
+            mid = round((bid + ask) / 2, 4)
+            if mid <= 0:
+                continue
+
+            _iv_raw = _safe_float(row.get("impliedVolatility"))
+            iv = _iv_raw if _iv_raw > 0 else None
+
+            delta = None
+            raw_delta = row.get("delta")
+            if raw_delta is not None and not (
+                isinstance(raw_delta, float) and math.isnan(raw_delta)
+            ):
+                delta = round(float(raw_delta), 4)
+
+            if delta is None and iv and price and strike and dte:
+                delta = bs_call_delta(S=price, K=strike, T=dte / 365.0, r=0.045, sigma=iv)
+                if delta is not None:
+                    delta = round(delta, 4)
+
+            roc = round((mid / cost_basis) * 100, 4) if cost_basis else None
+            roc_ann = round(roc * (365 / dte), 4) if (roc is not None and dte) else None
+            capital_gain_per_share = strike - cost_basis
+            total_return_if_called = round(
+                ((capital_gain_per_share + mid) / cost_basis) * 100, 4
+            ) if cost_basis else None
+
+            contracts.append({
+                "strike": strike,
+                "expiration": exp_str,
+                "dte": dte,
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+                "delta": delta,
+                "belowCostBasis": below_basis,
+                "lowOpenInterest": below_min_oi,
+                "roc": roc,
+                "rocAnnualized": roc_ann,
+                "totalReturnIfCalledPct": total_return_if_called,
+                "earningsInWindow": earnings_in_window,
+                "openInterest": oi,
+                "impliedVolatility": round(iv * 100, 2) if iv else None,
+            })
+
+    return {
+        "symbol": symbol,
+        "price": round(price, 2) if price else None,
+        "costBasis": cost_basis,
+        "contracts": contracts,
+    }
+
+
+def get_covered_call_heatmap(
+    symbol: str,
+    cost_basis: float,
+    shares: int,
+    config: dict,
+    allow_below_basis: bool = False,
+) -> dict:
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(
+            _fetch_covered_call_heatmap, symbol, cost_basis, shares, config, allow_below_basis
+        )
+        try:
+            return future.result(timeout=15)
+        except FuturesTimeout:
+            return {"symbol": symbol, "price": None, "contracts": [], "error": "timeout"}
+        except Exception as e:
+            return {"symbol": symbol, "price": None, "contracts": [], "error": str(e)}
+
+
 def get_heatmap(symbol: str, config: dict) -> dict:
     with ThreadPoolExecutor(max_workers=1) as ex:
         future = ex.submit(_fetch_heatmap, symbol, config)
