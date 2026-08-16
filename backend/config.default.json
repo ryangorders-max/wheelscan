@@ -10,6 +10,11 @@
   "minIVRank": 30,
   "minOpenInterest": 500,
   "watchlist": [
+    {"symbol": "JMIA",  "entryCondition": "Any", "notes": "Long term hold", "costBasis": 13.97,  "shares": 100},
+    {"symbol": "SOFI",  "entryCondition": "Any", "notes": "Long term hold", "costBasis": 14.80,  "shares": 100},
+    {"symbol": "DIS",   "entryCondition": "Any", "notes": "Long term hold", "costBasis": 121.20, "shares": 100},
+    {"symbol": "NVDA",  "entryCondition": "Any", "notes": "Long term hold", "costBasis": 68.15,  "shares": 100},
+    {"symbol": "DRTS",  "entryCondition": "Any", "notes": "Short term, purchased May 2026", "costBasis": 8.70, "shares": 200},
     {"symbol": "CLSK",  "entryCondition": "Any", "notes": ""},
     {"symbol": "IREN",  "entryCondition": "Any", "notes": ""},
     {"symbol": "RKLB",  "entryCondition": "Any", "notes": ""},
@@ -21,11 +26,9 @@
     {"symbol": "HOOD",  "entryCondition": "Any", "notes": ""},
     {"symbol": "APP",   "entryCondition": "Any", "notes": ""},
     {"symbol": "PLTR",  "entryCondition": "Any", "notes": ""},
-    {"symbol": "JMIA",  "entryCondition": "Any", "notes": ""},
     {"symbol": "SOUN",  "entryCondition": "Any", "notes": ""},
     {"symbol": "ACHR",  "entryCondition": "Any", "notes": ""},
     {"symbol": "RGTI",  "entryCondition": "Any", "notes": ""},
-    {"symbol": "NVDA",  "entryCondition": "Any", "notes": ""},
     {"symbol": "GOOGL", "entryCondition": "Any", "notes": ""},
     {"symbol": "NU",    "entryCondition": "Any", "notes": ""},
     {"symbol": "SPOT",  "entryCondition": "Any", "notes": ""},
@@ -34,7 +37,6 @@
     {"symbol": "SLB",   "entryCondition": "Any", "notes": ""},
     {"symbol": "OXY",   "entryCondition": "Any", "notes": ""},
     {"symbol": "XOM",   "entryCondition": "Any", "notes": ""},
-    {"symbol": "SOFI",  "entryCondition": "Any", "notes": ""},
     {"symbol": "RDDT",  "entryCondition": "Any", "notes": ""},
     {"symbol": "NOK",   "entryCondition": "Any", "notes": ""}
   ]
