@@ -7,6 +7,8 @@ from typing import Optional
 
 import yfinance as yf
 
+import schwab_source
+
 # ---------------------------------------------------------------------------
 # Black-Scholes helpers
 # ---------------------------------------------------------------------------
@@ -214,18 +216,24 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
     """
     Fetches stock info + best contract for one symbol.
     All yfinance I/O happens here so a single future.cancel/timeout covers it.
+    Price and option chain try Schwab first (schwab_source), falling back to
+    yfinance on SchwabUnavailable. Stock stats (HV30/SMA20/earnings/sector)
+    stay yfinance-only regardless — see schwab_source's module docstring.
     """
     t = yf.Ticker(symbol)
 
     # --- stock info ---
     fi = t.fast_info
     info = t.info or {}
-    price = (
-        fi.get("lastPrice")
-        or fi.get("previousClose")
-        or info.get("currentPrice")
-    )
-    price = float(price) if price else None
+    try:
+        price = schwab_source.get_price(symbol)
+    except schwab_source.SchwabUnavailable:
+        price = (
+            fi.get("lastPrice")
+            or fi.get("previousClose")
+            or info.get("currentPrice")
+        )
+        price = float(price) if price else None
 
     earnings_date = _parse_earnings(t)
     iv30         = _iv30_approx(t, price) if price else None
@@ -258,7 +266,14 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
     today = date.today()
     contracts = []
 
-    for exp_str in (t.options or []):
+    try:
+        schwab_puts = schwab_source.get_put_chain(symbol)
+    except schwab_source.SchwabUnavailable:
+        schwab_puts = None
+
+    expirations = list(schwab_puts.keys()) if schwab_puts else (t.options or [])
+
+    for exp_str in expirations:
         exp_date = _to_date(exp_str)
         if exp_date is None:
             continue
@@ -275,13 +290,17 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
             if earnings_date <= exp_date:
                 earnings_in_window = True
 
-        try:
-            puts = t.option_chain(exp_str).puts
-        except Exception:
-            continue
-
-        if puts.empty:
-            continue
+        if schwab_puts:
+            puts = schwab_puts.get(exp_str)
+            if puts is None or puts.empty:
+                continue
+        else:
+            try:
+                puts = t.option_chain(exp_str).puts
+            except Exception:
+                continue
+            if puts.empty:
+                continue
 
         for _, row in puts.iterrows():
             strike = _safe_float(row.get("strike"))
@@ -419,12 +438,15 @@ def _fetch_covered_call(
 
     fi = t.fast_info
     info = t.info or {}
-    price = (
-        fi.get("lastPrice")
-        or fi.get("previousClose")
-        or info.get("currentPrice")
-    )
-    price = float(price) if price else None
+    try:
+        price = schwab_source.get_price(symbol)
+    except schwab_source.SchwabUnavailable:
+        price = (
+            fi.get("lastPrice")
+            or fi.get("previousClose")
+            or info.get("currentPrice")
+        )
+        price = float(price) if price else None
 
     earnings_date = _parse_earnings(t)
     iv30 = _iv30_approx(t, price) if price else None
@@ -453,7 +475,14 @@ def _fetch_covered_call(
     contracts = []
     contract_lots = shares // 100
 
-    for exp_str in (t.options or []):
+    try:
+        schwab_calls = schwab_source.get_call_chain(symbol)
+    except schwab_source.SchwabUnavailable:
+        schwab_calls = None
+
+    expirations = list(schwab_calls.keys()) if schwab_calls else (t.options or [])
+
+    for exp_str in expirations:
         exp_date = _to_date(exp_str)
         if exp_date is None:
             continue
@@ -469,13 +498,17 @@ def _fetch_covered_call(
             if earnings_date <= exp_date:
                 earnings_in_window = True
 
-        try:
-            calls = t.option_chain(exp_str).calls
-        except Exception:
-            continue
-
-        if calls.empty:
-            continue
+        if schwab_calls:
+            calls = schwab_calls.get(exp_str)
+            if calls is None or calls.empty:
+                continue
+        else:
+            try:
+                calls = t.option_chain(exp_str).calls
+            except Exception:
+                continue
+            if calls.empty:
+                continue
 
         for _, row in calls.iterrows():
             strike = _safe_float(row.get("strike"))
@@ -606,8 +639,11 @@ def _fetch_heatmap(symbol: str, config: dict) -> dict:
 
     fi = t.fast_info
     info = t.info or {}
-    price = fi.get("lastPrice") or fi.get("previousClose") or info.get("currentPrice")
-    price = float(price) if price else None
+    try:
+        price = schwab_source.get_price(symbol)
+    except schwab_source.SchwabUnavailable:
+        price = fi.get("lastPrice") or fi.get("previousClose") or info.get("currentPrice")
+        price = float(price) if price else None
 
     earnings_date = _parse_earnings(t)
     collateral_cap = config["collateralCap"]
@@ -618,7 +654,14 @@ def _fetch_heatmap(symbol: str, config: dict) -> dict:
     today = date.today()
     contracts = []
 
-    for exp_str in (t.options or []):
+    try:
+        schwab_puts = schwab_source.get_put_chain(symbol)
+    except schwab_source.SchwabUnavailable:
+        schwab_puts = None
+
+    expirations = list(schwab_puts.keys()) if schwab_puts else (t.options or [])
+
+    for exp_str in expirations:
         exp_date = _to_date(exp_str)
         if exp_date is None:
             continue
@@ -634,13 +677,17 @@ def _fetch_heatmap(symbol: str, config: dict) -> dict:
             else:
                 earnings_in_window = True
 
-        try:
-            puts = t.option_chain(exp_str).puts
-        except Exception:
-            continue
-
-        if puts.empty:
-            continue
+        if schwab_puts:
+            puts = schwab_puts.get(exp_str)
+            if puts is None or puts.empty:
+                continue
+        else:
+            try:
+                puts = t.option_chain(exp_str).puts
+            except Exception:
+                continue
+            if puts.empty:
+                continue
 
         for _, row in puts.iterrows():
             strike = _safe_float(row.get("strike"))
@@ -722,8 +769,11 @@ def _fetch_covered_call_heatmap(
 
     fi = t.fast_info
     info = t.info or {}
-    price = fi.get("lastPrice") or fi.get("previousClose") or info.get("currentPrice")
-    price = float(price) if price else None
+    try:
+        price = schwab_source.get_price(symbol)
+    except schwab_source.SchwabUnavailable:
+        price = fi.get("lastPrice") or fi.get("previousClose") or info.get("currentPrice")
+        price = float(price) if price else None
 
     earnings_date = _parse_earnings(t)
     min_oi = max(50, config.get("minOpenInterest", 50) // 5)
@@ -732,7 +782,14 @@ def _fetch_covered_call_heatmap(
     today = date.today()
     contracts = []
 
-    for exp_str in (t.options or []):
+    try:
+        schwab_calls = schwab_source.get_call_chain(symbol)
+    except schwab_source.SchwabUnavailable:
+        schwab_calls = None
+
+    expirations = list(schwab_calls.keys()) if schwab_calls else (t.options or [])
+
+    for exp_str in expirations:
         exp_date = _to_date(exp_str)
         if exp_date is None:
             continue
@@ -745,13 +802,17 @@ def _fetch_covered_call_heatmap(
             days_before_exp = (exp_date - earnings_date).days
             earnings_in_window = 0 <= days_before_exp <= earnings_buffer or True
 
-        try:
-            calls = t.option_chain(exp_str).calls
-        except Exception:
-            continue
-
-        if calls.empty:
-            continue
+        if schwab_calls:
+            calls = schwab_calls.get(exp_str)
+            if calls is None or calls.empty:
+                continue
+        else:
+            try:
+                calls = t.option_chain(exp_str).calls
+            except Exception:
+                continue
+            if calls.empty:
+                continue
 
         for _, row in calls.iterrows():
             strike = _safe_float(row.get("strike"))
