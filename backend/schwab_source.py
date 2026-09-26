@@ -68,8 +68,8 @@ def _chain_by_expiration(symbol: str, exp_map_key: str) -> dict[str, pd.DataFram
                 iv_raw = c.get("volatility")  # Schwab reports as a percentage, e.g. 42.5
                 rows.append({
                     "strike": float(strike_str),
-                    "bid": c.get("bidPrice") or 0.0,
-                    "ask": c.get("askPrice") or 0.0,
+                    "bid": c.get("bid") or c.get("bidPrice") or 0.0,
+                    "ask": c.get("ask") or c.get("askPrice") or 0.0,
                     "openInterest": c.get("openInterest") or 0,
                     "impliedVolatility": (iv_raw / 100.0) if iv_raw and iv_raw > 0 else None,
                     "delta": c.get("delta"),
