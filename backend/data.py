@@ -78,6 +78,20 @@ def _safe_float(val, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
+
+def _row_mid(row, bid: float, ask: float) -> tuple[float, bool]:
+    """
+    Mid price for a chain row. Outside market hours yfinance (and sometimes
+    Schwab) report bid/ask as 0, which used to drop every contract. Fall back
+    to the last traded price and flag it as stale so the UI/scoring can tell.
+    """
+    if bid > 0 and ask > 0:
+        return round((bid + ask) / 2, 4), False
+    last = _safe_float(row.get("lastPrice"))
+    if last > 0:
+        return round(last, 4), True
+    return round((bid + ask) / 2, 4), False
+
 def _inv_norm(p: float) -> float:
     """
     Rational approximation of the inverse normal CDF (Abramowitz & Stegun 26.2.17).
@@ -268,8 +282,10 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
 
     try:
         schwab_puts = schwab_source.get_put_chain(symbol)
-    except schwab_source.SchwabUnavailable:
+        data_source, schwab_error = "schwab", None
+    except schwab_source.SchwabUnavailable as exc:
         schwab_puts = None
+        data_source, schwab_error = "yfinance", str(exc)
 
     expirations = list(schwab_puts.keys()) if schwab_puts else (t.options or [])
 
@@ -320,7 +336,7 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
 
             bid = _safe_float(row.get("bid"))
             ask = _safe_float(row.get("ask"))
-            mid = round((bid + ask) / 2, 4)
+            mid, stale_quote = _row_mid(row, bid, ask)
             if mid <= 0:
                 continue
 
@@ -351,6 +367,7 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
 
             contracts.append({
                 "strike": strike,
+                "staleQuote": stale_quote,
                 "expiration": exp_str,
                 "dte": dte,
                 "bid": bid,
@@ -417,7 +434,7 @@ def _fetch_symbol(symbol: str, config: dict) -> dict:
             pool = proxy if proxy else contracts
             best = min(pool, key=lambda c: (oi_pen(c), dte_dist(c), -(c["roc"] or 0)))
 
-    return {**stock, "contract": best, "error": False}
+    return {**stock, "contract": best, "error": False, "dataSource": data_source, "schwabError": schwab_error}
 
 
 def _fetch_covered_call(
@@ -477,8 +494,10 @@ def _fetch_covered_call(
 
     try:
         schwab_calls = schwab_source.get_call_chain(symbol)
-    except schwab_source.SchwabUnavailable:
+        data_source, schwab_error = "schwab", None
+    except schwab_source.SchwabUnavailable as exc:
         schwab_calls = None
+        data_source, schwab_error = "yfinance", str(exc)
 
     expirations = list(schwab_calls.keys()) if schwab_calls else (t.options or [])
 
@@ -522,7 +541,7 @@ def _fetch_covered_call(
 
             bid = _safe_float(row.get("bid"))
             ask = _safe_float(row.get("ask"))
-            mid = round((bid + ask) / 2, 4)
+            mid, stale_quote = _row_mid(row, bid, ask)
             if mid <= 0:
                 continue
 
@@ -555,6 +574,7 @@ def _fetch_covered_call(
 
             contracts.append({
                 "strike": strike,
+                "staleQuote": stale_quote,
                 "expiration": exp_str,
                 "dte": dte,
                 "bid": bid,
@@ -589,7 +609,7 @@ def _fetch_covered_call(
             ),
         )
 
-    return {**stock, "contract": best, "candidateCount": len(contracts), "error": False}
+    return {**stock, "contract": best, "candidateCount": len(contracts), "error": False, "dataSource": data_source, "schwabError": schwab_error}
 
 
 def get_covered_call(
@@ -656,8 +676,10 @@ def _fetch_heatmap(symbol: str, config: dict) -> dict:
 
     try:
         schwab_puts = schwab_source.get_put_chain(symbol)
-    except schwab_source.SchwabUnavailable:
+        data_source, schwab_error = "schwab", None
+    except schwab_source.SchwabUnavailable as exc:
         schwab_puts = None
+        data_source, schwab_error = "yfinance", str(exc)
 
     expirations = list(schwab_puts.keys()) if schwab_puts else (t.options or [])
 
@@ -699,7 +721,7 @@ def _fetch_heatmap(symbol: str, config: dict) -> dict:
 
             bid = _safe_float(row.get("bid"))
             ask = _safe_float(row.get("ask"))
-            mid = round((bid + ask) / 2, 4)
+            mid, stale_quote = _row_mid(row, bid, ask)
             if mid <= 0:
                 continue
 
@@ -730,6 +752,7 @@ def _fetch_heatmap(symbol: str, config: dict) -> dict:
 
             contracts.append({
                 "strike": strike,
+                "staleQuote": stale_quote,
                 "expiration": exp_str,
                 "dte": dte,
                 "bid": bid,
@@ -750,6 +773,8 @@ def _fetch_heatmap(symbol: str, config: dict) -> dict:
         "symbol": symbol,
         "price": round(price, 2) if price else None,
         "contracts": contracts,
+        "dataSource": data_source,
+        "schwabError": schwab_error,
     }
 
 
@@ -784,8 +809,10 @@ def _fetch_covered_call_heatmap(
 
     try:
         schwab_calls = schwab_source.get_call_chain(symbol)
-    except schwab_source.SchwabUnavailable:
+        data_source, schwab_error = "schwab", None
+    except schwab_source.SchwabUnavailable as exc:
         schwab_calls = None
+        data_source, schwab_error = "yfinance", str(exc)
 
     expirations = list(schwab_calls.keys()) if schwab_calls else (t.options or [])
 
@@ -826,7 +853,7 @@ def _fetch_covered_call_heatmap(
 
             bid = _safe_float(row.get("bid"))
             ask = _safe_float(row.get("ask"))
-            mid = round((bid + ask) / 2, 4)
+            mid, stale_quote = _row_mid(row, bid, ask)
             if mid <= 0:
                 continue
 
@@ -854,6 +881,7 @@ def _fetch_covered_call_heatmap(
 
             contracts.append({
                 "strike": strike,
+                "staleQuote": stale_quote,
                 "expiration": exp_str,
                 "dte": dte,
                 "bid": bid,
@@ -875,6 +903,8 @@ def _fetch_covered_call_heatmap(
         "price": round(price, 2) if price else None,
         "costBasis": cost_basis,
         "contracts": contracts,
+        "dataSource": data_source,
+        "schwabError": schwab_error,
     }
 
 
@@ -1035,7 +1065,7 @@ def score_results(results: list[dict]) -> list[dict]:
     for r in valid:
         c = r["contract"]
         bid, ask, mid = c.get("bid", 0), c.get("ask", 0), c.get("mid") or 0
-        if mid > 0:
+        if mid > 0 and not c.get("staleQuote"):
             spreads.append((ask - bid) / mid)
 
     # ── score each result ────────────────────────────────────────────────────
@@ -1109,7 +1139,7 @@ def score_results(results: list[dict]) -> list[dict]:
 
         # 9. Bid-Ask Spread Quality (3 pts)
         bid, ask, mid = c.get("bid", 0), c.get("ask", 0), c.get("mid") or 0
-        if mid > 0 and spreads:
+        if mid > 0 and spreads and not c.get("staleQuote"):
             spread_pct = (ask - bid) / mid
             # invert: tighter spread (lower value) → higher score
             spread_score = norm(-spread_pct, [-s for s in spreads]) * 3

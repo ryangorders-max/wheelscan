@@ -67,12 +67,15 @@ def _chain_by_expiration(symbol: str, exp_map_key: str) -> dict[str, pd.DataFram
             for c in contracts:
                 iv_raw = c.get("volatility")  # Schwab reports as a percentage, e.g. 42.5
                 rows.append({
-                "strike": float(strike_str),
-                "bid": c.get("bid") or c.get("bidPrice") or 0.0,
-                "ask": c.get("ask") or c.get("askPrice") or 0.0,
-                "openInterest": c.get("openInterest") or 0,
-                "impliedVolatility": (iv_raw / 100.0) if iv_raw and iv_raw > 0 else None,
-                "delta": c.get("delta"),
+                    "strike": float(strike_str),
+                    # Chain contracts use "bid"/"ask"/"last"/"mark" — "bidPrice"/
+                    # "askPrice" only exist on the equity /quotes payload.
+                    "bid": c.get("bid") or c.get("bidPrice") or 0.0,
+                    "ask": c.get("ask") or c.get("askPrice") or 0.0,
+                    "lastPrice": c.get("mark") or c.get("last") or c.get("closePrice") or 0.0,
+                    "openInterest": c.get("openInterest") or 0,
+                    "impliedVolatility": (iv_raw / 100.0) if iv_raw and iv_raw > 0 else None,
+                    "delta": c.get("delta"),
                 })
 
     if not rows_by_exp:

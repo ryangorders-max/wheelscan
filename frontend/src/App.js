@@ -63,7 +63,7 @@ function SortableTh({ col, label, sortKey, sortDir, onSort }) {
 
 function ContractCard({ result, onClose }) {
   if (!result) return null;
-  const { symbol, price, iv30, earningsDate, contract: c, error, errorMessage } = result;
+  const { symbol, price, iv30, earningsDate, contract: c, error, errorMessage, dataSource, schwabError } = result;
   return (
     <div className="mt-4 bg-gray-800 border border-gray-700 rounded-xl p-4 relative">
       <button onClick={onClose}
@@ -77,6 +77,7 @@ function ContractCard({ result, onClose }) {
             <span className="font-mono text-gray-400 text-sm">{fmt.dollar(price)}</span>
             {iv30 != null && <span className="text-xs text-gray-500">IV30 {fmt.pct1(iv30)}</span>}
             {earningsDate && <span className="text-xs text-gray-500">Earnings {earningsDate}</span>}
+            <SourceBadge source={dataSource} error={schwabError} />
           </div>
           {c ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -104,9 +105,20 @@ function ContractCard({ result, onClose }) {
   );
 }
 
+function SourceBadge({ source, error }) {
+  if (!source) return null;
+  const live = source === 'schwab';
+  return (
+    <span title={live ? 'Option chain from Schwab' : `Schwab unavailable — using yfinance${error ? `: ${error}` : ''}`}
+      className={`text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ${live ? 'bg-green-900/60 text-green-300' : 'bg-amber-900/60 text-amber-300'}`}>
+      {live ? 'Schwab' : 'yfinance'}
+    </span>
+  );
+}
+
 function CoveredCallCard({ result, onClose }) {
   if (!result) return null;
-  const { symbol, price, costBasis, shares, unrealizedPnlPct, iv30, earningsDate, contract: c, error, errorMessage } = result;
+  const { symbol, price, costBasis, shares, unrealizedPnlPct, iv30, earningsDate, contract: c, error, errorMessage, dataSource, schwabError } = result;
   return (
     <div className="mt-4 bg-gray-800 border border-gray-700 rounded-xl p-4 relative">
       <button onClick={onClose}
@@ -120,6 +132,7 @@ function CoveredCallCard({ result, onClose }) {
             <span className="font-mono text-gray-400 text-sm">{fmt.dollar(price)}</span>
             {iv30 != null && <span className="text-xs text-gray-500">IV30 {fmt.pct1(iv30)}</span>}
             {earningsDate && <span className="text-xs text-gray-500">Earnings {earningsDate}</span>}
+            <SourceBadge source={dataSource} error={schwabError} />
           </div>
           <div className="flex items-baseline gap-3 mb-3 text-xs text-gray-500">
             <span>Basis {fmt.dollar(costBasis)}</span>
@@ -147,6 +160,7 @@ function CoveredCallCard({ result, onClose }) {
               {c.belowCostBasis   && <div className="col-span-full text-xs text-red-400 mt-1">⚠️ Strike is below your cost basis — assignment would realize a loss on shares</div>}
               {c.lowOpenInterest  && <div className="col-span-full text-xs text-yellow-400 mt-1">⚠️ Low open interest</div>}
               {c.earningsInWindow && <div className="col-span-full text-xs text-orange-400 mt-1">⚠ Earnings fall within expiration window</div>}
+              {c.staleQuote       && <div className="col-span-full text-xs text-gray-400 mt-1">Premium is last/closing price — no live bid/ask (market closed)</div>}
             </div>
           ) : (
             <p className="text-gray-500 text-sm">No qualifying contract found{costBasis ? ' at or above cost basis' : ''}.</p>
@@ -402,6 +416,7 @@ function HeatmapPanel({
         <span className="font-mono font-bold text-white">{symbol}</span>
         {data.price != null && <span className="font-mono text-gray-400 text-sm">${data.price.toFixed(2)}</span>}
         <span className="text-gray-600 text-xs">{title} · DTE 7–60</span>
+        <SourceBadge source={data.dataSource} error={data.schwabError} />
         <div className="ml-auto flex gap-0.5 bg-gray-800 rounded-lg p-0.5">
           {metrics.map(m => (
             <button key={m.key} onClick={() => { setMetric(m.key); }}
