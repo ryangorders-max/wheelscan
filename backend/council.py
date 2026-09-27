@@ -375,6 +375,106 @@ def opinion_prompt(ctx: dict) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Covered-call mode: for positions you already hold UNDERWATER
+# ---------------------------------------------------------------------------
+
+def build_cc_context(symbol: str, cfg: dict, cost_basis: float, shares: int) -> dict:
+    """Blocking. Pulls the best call ABOVE basis and the best call at your target
+    delta allowing BELOW basis, so the models weigh the real trade-off."""
+    import yfinance as yf
+    from data import _fetch_covered_call, _price_stats
+
+    above = _fetch_covered_call(symbol, cost_basis, shares, cfg, allow_below_basis=False)
+    below = _fetch_covered_call(symbol, cost_basis, shares, cfg, allow_below_basis=True)
+    price = above.get("price") or below.get("price")
+
+    stats: dict[str, Any] = {}
+    try:
+        t = yf.Ticker(symbol)
+        ps = _price_stats(t)
+        info = t.info or {}
+        stats = {"hv30": round(ps["hv30"] * 100, 2) if ps.get("hv30") else None,
+                 "sma20": round(ps["sma20"], 2) if ps.get("sma20") else None,
+                 "week52High": info.get("fiftyTwoWeekHigh"), "week52Low": info.get("fiftyTwoWeekLow"),
+                 "sector": info.get("sector"), "marketCap": info.get("marketCap")}
+    except Exception:
+        pass
+
+    below_c = below.get("contract")
+    if below_c and not below_c.get("belowCostBasis"):
+        below_c = None  # target-delta strike is already above basis; no real trade-off
+
+    lots = max(shares // 100, 1)
+    derived: dict[str, Any] = {}
+    if price and cost_basis:
+        derived["unrealizedPnlUSD"] = round((price - cost_basis) * shares, 2)
+        derived["unrealizedPnlPct"] = round((price - cost_basis) / cost_basis * 100, 2)
+        derived["recoveryNeededPct"] = round((cost_basis - price) / price * 100, 2)
+        derived["capitalTiedUpUSD"] = round(price * shares, 2)
+    for name, c in (("aboveBasis", above.get("contract")), ("belowBasis", below_c)):
+        if c and price:
+            derived[name] = {
+                "premiumUSD": round(c["mid"] * 100 * lots, 2),
+                "effectiveBasisAfterPremium": round(cost_basis - c["mid"], 2),
+                "strikeOTMPct": round((c["strike"] - price) / price * 100, 2),
+                "lockedInPnlIfCalledUSD": round((c["strike"] - cost_basis + c["mid"]) * 100 * lots, 2),
+            }
+    # compute_spread compares model floors to this
+    derived["breakeven"] = cost_basis
+
+    return {
+        "asOf": datetime.now(_NY).strftime("%Y-%m-%d %H:%M %Z"),
+        "mode": "cc",
+        "symbol": symbol,
+        "dataSource": above.get("dataSource") or below.get("dataSource"),
+        "stock": {"price": price, "iv30": above.get("iv30") or below.get("iv30"),
+                  "earningsDate": above.get("earningsDate") or below.get("earningsDate"), **stats},
+        "contract": above.get("contract"),          # best call at/above basis
+        "belowBasisContract": below_c,              # best call at target delta if you accept a below-basis strike
+        "derived": derived,
+        "existingPosition": {"shares": shares, "costBasis": cost_basis},
+        "traderRules": {"targetDelta": cfg.get("targetDelta"), "dteRange": [cfg.get("dteLow"), cfg.get("dteHigh")]},
+        "recentHeadlines": _headlines(symbol),
+    }
+
+
+CC_SYSTEM = """You are a skeptical portfolio advisor for a retail trader running the wheel strategy. They ALREADY OWN these shares and the position is underwater (price below cost basis).
+
+Decide what they should do over the next 1-2 months. The options are:
+- "sell_call_above_basis": sell the call at/above cost basis (small premium, no locked-in loss if called)
+- "sell_call_below_basis": sell the closer-to-the-money call below basis (more premium, but locks in a loss if called away)
+- "hold": keep the shares, sell no call, wait for recovery
+- "exit": sell the shares, take the loss, redeploy the capital elsewhere
+
+Treat "exit" as a real option, not a last resort. Cost basis is sunk; the only question is whether this is the best use of the capital from here. Do not favour selling a call just because this is a covered-call tool.
+
+Rules:
+- The JSON snapshot is live data and OVERRIDES your memory. Do not contradict its prices, dates or position.
+- Anything relying on possibly-outdated memory (earnings, guidance, deals, management) must also appear in stale_knowledge_flags.
+- Do not invent figures. Be concrete and brief. No disclaimers.
+
+Respond with ONLY a JSON object:
+{
+  "verdict": "sell_call_above_basis" | "sell_call_below_basis" | "hold" | "exit",
+  "conviction": <integer 1-10, confidence in your verdict>,
+  "still_own_conviction": <integer 1-10: would you BUY this stock today at the current price? this is the real test of holding>,
+  "fair_value_floor": <number, where downside likely stops over 3-6 months>,
+  "upside_target": <number, realistic price in 3-6 months if things go right>,
+  "floor_reasoning": "<one or two sentences>",
+  "bull_case": ["<max 3 short points>"],
+  "bear_case": ["<max 3 short points>"],
+  "key_risk": "<the single biggest risk in your recommended path>",
+  "better_strike": <number or null — call strike you would sell, if any>,
+  "stale_knowledge_flags": ["<claims relying on possibly-outdated memory>"]
+}"""
+
+
+def cc_prompt(ctx: dict) -> str:
+    return ("Decide what to do with this underwater position. Live snapshot (JSON):\n\n"
+            + json.dumps(ctx, indent=2, default=str) + "\n\nReturn the JSON object only.")
+
+
 SYNTH_SYSTEM = """You compare independent analyses from several AI models of the same options trade. You are a referee, not an analyst.
 
 Rules:
@@ -399,7 +499,7 @@ Respond with ONLY a JSON object:
 def synth_prompt(ctx: dict, opinions: dict[str, dict]) -> str:
     return (
         "Live snapshot the models were given:\n"
-        + json.dumps({k: ctx[k] for k in ("symbol", "stock", "contract", "derived", "existingPosition")}, default=str)
+        + json.dumps({k: ctx.get(k) for k in ("symbol", "stock", "contract", "belowBasisContract", "derived", "existingPosition")}, default=str)
         + "\n\nModel analyses (keyed by model):\n"
         + json.dumps(opinions, indent=2)
         + "\n\nReturn the JSON object only."
@@ -494,18 +594,38 @@ def _http_error(e: Exception) -> str:
     return f"{type(e).__name__}: {e}"
 
 
+RETRY_STATUS = {429, 500, 502, 503, 504}   # overload / rate-limit / transient
+RETRY_DELAYS = [3, 8]                       # seconds; two retries, then give up
+
+
+def _retryable(e: Exception) -> bool:
+    if isinstance(e, httpx.HTTPStatusError):
+        return e.response.status_code in RETRY_STATUS
+    return isinstance(e, (httpx.TimeoutException, httpx.TransportError))
+
+
 async def _ask(client, provider: str, model: str, system: str, prompt: str, run_id: str, role: str) -> dict:
     t0 = datetime.now(_NY)
-    try:
-        text, tin, tout = await CALLERS[provider](client, model, system, prompt)
-    except Exception as e:
-        return {"provider": provider, "model": model, "error": _http_error(e)}
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            text, tin, tout = await CALLERS[provider](client, model, system, prompt)
+            break
+        except Exception as e:
+            if _retryable(e) and attempts <= len(RETRY_DELAYS):
+                await asyncio.sleep(RETRY_DELAYS[attempts - 1])
+                continue
+            msg = _http_error(e)
+            if attempts > 1:
+                msg += f" (after {attempts} tries)"
+            return {"provider": provider, "model": model, "error": msg}
     list_cost = _cost(model, tin, tout)
     cost = 0.0 if provider in FREE_PROVIDERS else list_cost
     log_usage({"ts": t0.isoformat(), "run_id": run_id, "role": role, "provider": provider,
                "model": model, "in": tin, "out": tout, "cost": cost, "listCost": list_cost})
     base = {"provider": provider, "model": model, "tokensIn": tin, "tokensOut": tout, "costUSD": cost,
-            "seconds": round((datetime.now(_NY) - t0).total_seconds(), 1)}
+            "seconds": round((datetime.now(_NY) - t0).total_seconds(), 1), "attempts": attempts}
     try:
         return {**base, "result": _parse_json(text)}
     except Exception:
@@ -527,7 +647,8 @@ def _num(v) -> Optional[float]:
 def compute_spread(opinions: dict[str, dict], ctx: dict) -> dict:
     ok = {k: v["result"] for k, v in opinions.items() if "result" in v}
     conv = {k: _num(r.get("conviction")) for k, r in ok.items()}
-    comfort = {k: _num(r.get("assignment_comfort")) for k, r in ok.items()}
+    comfort = {k: _num(r.get("assignment_comfort", r.get("still_own_conviction"))) for k, r in ok.items()}
+    upside = {k: _num(r.get("upside_target")) for k, r in ok.items()}
     floors = {k: _num(r.get("fair_value_floor")) for k, r in ok.items()}
     verdicts = {k: r.get("verdict") for k, r in ok.items()}
 
@@ -545,6 +666,7 @@ def compute_spread(opinions: dict[str, dict], ctx: dict) -> dict:
         "unanimous": len(set(verdicts.values())) == 1 and len(verdicts) > 1,
         "conviction": rng(conv),
         "assignmentComfort": rng(comfort),
+        "upside": rng(upside),
         "floor": rng(floors),
         # negative = model thinks the stock can fall below your breakeven
         "floorVsBreakevenPct": floor_vs_be,
@@ -555,11 +677,15 @@ def compute_spread(opinions: dict[str, dict], ctx: dict) -> dict:
 # Orchestration — async generator of (event, data) for SSE
 # ---------------------------------------------------------------------------
 
-async def run_council(symbol: str, cfg: dict, contract: Optional[dict], force: bool = False) -> AsyncIterator[tuple[str, dict]]:
+async def run_council(symbol: str, cfg: dict, contract: Optional[dict], force: bool = False,
+                      mode: str = "put", position: Optional[dict] = None) -> AsyncIterator[tuple[str, dict]]:
     strike = contract.get("strike") if contract else None
     expiration = contract.get("expiration") if contract else None
 
-    key = cache_key(symbol, strike, expiration)
+    if mode == "cc":
+        key = f"CC|{symbol}|{float(position['costBasis']):g}|{position['shares']}|{_today_ny()}"
+    else:
+        key = cache_key(symbol, strike, expiration)
     if not force:
         hit = cache_get(key)
         if hit:
@@ -581,17 +707,26 @@ async def run_council(symbol: str, cfg: dict, contract: Optional[dict], force: b
         return
 
     try:
-        ctx = await asyncio.to_thread(build_context, symbol, cfg, contract)
+        if mode == "cc":
+            ctx = await asyncio.to_thread(build_cc_context, symbol, cfg, float(position["costBasis"]), int(position["shares"]))
+        else:
+            ctx = await asyncio.to_thread(build_context, symbol, cfg, contract)
     except Exception as e:
         yield "error", {"message": f"Could not load market data for {symbol}: {e}"}
         return
-    if not ctx.get("contract"):
+    if mode == "cc":
+        if not ctx["stock"].get("price"):
+            yield "error", {"message": f"No price for {symbol} right now."}
+            return
+        # Hold/exit is still worth asking even with no call in range, so no contract is required here.
+    elif not ctx.get("contract"):
         yield "error", {"message": f"No qualifying put for {symbol} under your current DTE/delta settings."}
         return
     yield "context", ctx
 
-    run_id = f"{symbol}-{datetime.now(_NY).strftime('%Y%m%d%H%M%S%f')}"
-    prompt = opinion_prompt(ctx)
+    run_id = f"{'CC-' if mode == 'cc' else ''}{symbol}-{datetime.now(_NY).strftime('%Y%m%d%H%M%S%f')}"
+    prompt = cc_prompt(ctx) if mode == "cc" else opinion_prompt(ctx)
+    system = CC_SYSTEM if mode == "cc" else OPINION_SYSTEM
     opinions: dict[str, dict] = {}
 
     for p in PROVIDERS:
@@ -600,7 +735,7 @@ async def run_council(symbol: str, cfg: dict, contract: Optional[dict], force: b
             yield "opinion", opinions[p]
 
     async with httpx.AsyncClient(timeout=CALL_TIMEOUT) as client:
-        tasks = [asyncio.create_task(_ask(client, p, PROVIDERS[p]["model"], OPINION_SYSTEM, prompt, run_id, "opinion"))
+        tasks = [asyncio.create_task(_ask(client, p, PROVIDERS[p]["model"], system, prompt, run_id, "opinion"))
                  for p in providers]
         for fut in asyncio.as_completed(tasks):
             op = await fut
@@ -611,11 +746,20 @@ async def run_council(symbol: str, cfg: dict, contract: Optional[dict], force: b
         spread = compute_spread(opinions, ctx)
         synthesis = None
         if len(good) >= 2:
-            synth_p = SYNTH_PROVIDER if SYNTH_PROVIDER in providers else next(iter(good))
-            synth_model = SYNTH_MODEL if synth_p == SYNTH_PROVIDER else PROVIDERS[synth_p]["model"]
-            s = await _ask(client, synth_p, synth_model, SYNTH_SYSTEM, synth_prompt(ctx, good), run_id, "synthesis")
+            # Preferred referee first; if it's down (e.g. Gemini overloaded), fall back to
+            # a provider that just answered successfully, cheapest/free first.
+            order = [SYNTH_PROVIDER] if SYNTH_PROVIDER in providers else []
+            order += sorted((p for p in good if p not in order), key=lambda p: (p not in FREE_PROVIDERS, p != "gemini"))
+            s, synth_p, synth_model, spent = {}, None, None, 0.0
+            for synth_p in order:
+                synth_model = SYNTH_MODEL if synth_p == SYNTH_PROVIDER else PROVIDERS[synth_p]["model"]
+                s = await _ask(client, synth_p, synth_model, SYNTH_SYSTEM, synth_prompt(ctx, good), run_id, "synthesis")
+                spent += s.get("costUSD") or 0
+                if "result" in s:
+                    break
             synthesis = {"spread": spread, "provider": synth_p, "model": synth_model,
-                         "costUSD": s.get("costUSD"), **({"map": s["result"]} if "result" in s else {"error": s.get("error")})}
+                         "fallback": synth_p != (order[0] if order else None),
+                         "costUSD": round(spent, 5), **({"map": s["result"]} if "result" in s else {"error": s.get("error")})}
         else:
             synthesis = {"spread": spread, "error": "Need at least two model answers to compare."}
         yield "synthesis", synthesis
@@ -623,7 +767,8 @@ async def run_council(symbol: str, cfg: dict, contract: Optional[dict], force: b
     costs = [o.get("costUSD") for o in opinions.values()] + [synthesis.get("costUSD")]
     done = {"runCostUSD": round(sum(c for c in costs if c), 4), "cached": False,
             "monthSpendUSD": usage_summary()["spendUSD"], "capUSD": MONTHLY_CAP}
-    # only cache runs where at least two models answered
-    if len(good) >= 2:
+    # only cache complete runs — a model that errored should get another shot on reopen
+    failed = [o for o in opinions.values() if "error" in o and not o.get("skipped")]
+    if len(good) >= 2 and not failed and "map" in synthesis:
         cache_put(key, {"context": ctx, "opinions": opinions, "synthesis": synthesis, "done": done})
     yield "done", done

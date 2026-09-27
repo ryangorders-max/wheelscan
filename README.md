@@ -37,6 +37,10 @@ IV/HV, earnings date, your existing position and recent headlines) to Claude,
 GPT and Gemini in parallel, then a referee pass maps where they disagree. Results
 are cached per symbol/strike/expiry for the day; re-opening is free.
 
+On the **Positions** tab, a held position that's *below* your cost basis gets its own
+**Council** button (after you run CC on it). That version asks a different question:
+sell a call above basis, sell one below basis (locking in a loss if called), hold, or exit.
+
 Set on Railway (any provider without a key is skipped):
 
 ```bash

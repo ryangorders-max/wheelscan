@@ -210,7 +210,33 @@ async def council_run(symbol: str, req: CouncilRequest):
     )
 
 
+class CoveredCallCouncilRequest(BaseModel):
+    costBasis: float
+    shares:    int
+    force:     bool = False
+
+
+@app.post("/council/cc/{symbol}")
+async def council_cc(symbol: str, req: CoveredCallCouncilRequest):
+    """Council for an UNDERWATER held position: sell call above basis / below basis / hold / exit."""
+    cfg = read_config()
+
+    async def events():
+        async for event, data in council.run_council(
+            symbol.upper(), cfg, None, req.force, mode="cc",
+            position={"costBasis": req.costBasis, "shares": req.shares},
+        ):
+            yield f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/council/usage")
 def council_usage():
     """Month-to-date council spend, run count, and which providers are configured."""
-    return council.usage_summary()
+    from fastapi.responses import JSONResponse
+    return JSONResponse(council.usage_summary(), headers={"Cache-Control": "no-store"})

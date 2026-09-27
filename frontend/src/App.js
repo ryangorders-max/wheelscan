@@ -641,10 +641,18 @@ const VERDICT_STYLE = {
   sell_put: 'bg-green-900/60 text-green-300',
   wait:     'bg-yellow-900/60 text-yellow-300',
   pass:     'bg-red-900/60 text-red-300',
+  // covered-call mode
+  sell_call_above_basis: 'bg-green-900/60 text-green-300',
+  sell_call_below_basis: 'bg-orange-900/60 text-orange-300',
+  hold:                  'bg-yellow-900/60 text-yellow-300',
+  exit:                  'bg-red-900/60 text-red-300',
+};
+const VERDICT_LABEL = {
+  sell_put: 'sell put', sell_call_above_basis: 'call ≥ basis', sell_call_below_basis: 'call < basis',
 };
 
-async function streamCouncil(symbol, body, onEvent, signal) {
-  const res = await fetch(`${API}/council/${symbol}`, {
+async function streamCouncil(path, body, onEvent, signal) {
+  const res = await fetch(`${API}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -682,8 +690,9 @@ function Score({ label, value }) {
   );
 }
 
-function OpinionCard({ meta, op }) {
+function OpinionCard({ meta, op, mode }) {
   const r = op?.result;
+  const cc = mode === 'cc';
   return (
     <div className={`bg-gray-800/70 border ${meta.border} rounded-xl p-3 flex flex-col gap-2 min-w-0`}>
       <div className="flex items-center gap-2">
@@ -691,7 +700,7 @@ function OpinionCard({ meta, op }) {
         {op?.model && <span className="text-[10px] text-gray-500 font-mono truncate">{op.model}</span>}
         {r?.verdict && (
           <span className={`ml-auto text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded ${VERDICT_STYLE[r.verdict] || 'bg-gray-700 text-gray-300'}`}>
-            {String(r.verdict).replace('_', ' ')}
+            {VERDICT_LABEL[r.verdict] || String(r.verdict).replace(/_/g, ' ')}
           </span>
         )}
       </div>
@@ -703,10 +712,14 @@ function OpinionCard({ meta, op }) {
         <>
           <div className="grid grid-cols-3 gap-1.5">
             <Score label="Conviction" value={r.conviction} />
-            <Score label="Own it?" value={r.assignment_comfort} />
+            {cc
+              ? <Score label="Buy it today?" value={r.still_own_conviction} />
+              : <Score label="Own it?" value={r.assignment_comfort} />}
             <div className="bg-gray-900 rounded px-2 py-1">
-              <div className="text-[9px] uppercase tracking-wide text-gray-500">Floor</div>
-              <div className="font-mono text-sm text-indigo-300">{fmt.dollar(r.fair_value_floor)}</div>
+              <div className="text-[9px] uppercase tracking-wide text-gray-500">{cc ? 'Floor / upside' : 'Floor'}</div>
+              <div className="font-mono text-sm text-indigo-300">
+                {fmt.dollar(r.fair_value_floor)}{cc && r.upside_target != null && <span className="text-gray-400"> / {fmt.dollar(r.upside_target)}</span>}
+              </div>
             </div>
           </div>
           {r.floor_reasoning && <p className="text-xs text-gray-400">{r.floor_reasoning}</p>}
@@ -719,7 +732,7 @@ function OpinionCard({ meta, op }) {
             <ul className="list-disc pl-4 text-gray-300 space-y-0.5">{(r.bear_case || []).map((b, i) => <li key={i}>{b}</li>)}</ul>
           </div>
           {r.key_risk && <p className="text-xs text-orange-300"><span className="font-semibold">Key risk:</span> {r.key_risk}</p>}
-          {r.better_strike != null && <p className="text-xs text-gray-400">Would prefer strike <span className="font-mono text-indigo-300">{fmt.dollar(r.better_strike)}</span></p>}
+          {r.better_strike != null && <p className="text-xs text-gray-400">{cc ? 'Would sell the' : 'Would prefer strike'} <span className="font-mono text-indigo-300">{fmt.dollar(r.better_strike)}</span>{cc ? ' call' : ''}</p>}
           {r.stale_knowledge_flags?.length > 0 && (
             <p className="text-[11px] text-amber-400/80">⚠ From memory, may be stale: {r.stale_knowledge_flags.join('; ')}</p>
           )}
@@ -732,7 +745,8 @@ function OpinionCard({ meta, op }) {
   );
 }
 
-function SynthesisBlock({ syn }) {
+function SynthesisBlock({ syn, mode }) {
+  const cc = mode === 'cc';
   if (!syn) return null;
   const s = syn.spread || {};
   const m = syn.map;
@@ -742,15 +756,15 @@ function SynthesisBlock({ syn }) {
       <div className="flex items-center gap-2">
         <span className="font-semibold text-indigo-300">Where they disagree</span>
         {s.unanimous && <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-gray-700 text-gray-300" title="Models trained on similar data often share blind spots">unanimous — weak evidence</span>}
-        {syn.model && <span className="ml-auto text-[10px] text-gray-500 font-mono">referee: {syn.model}</span>}
+        {syn.model && <span className="ml-auto text-[10px] text-gray-500 font-mono" title={syn.fallback ? 'Preferred referee was unavailable' : undefined}>referee: {syn.model}{syn.fallback ? ' (fallback)' : ''}</span>}
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <div className="bg-gray-900 rounded px-2 py-1.5"><div className="text-[9px] uppercase text-gray-500">Conviction range</div><div className="font-mono text-gray-200">{range(s.conviction)}</div></div>
-        <div className="bg-gray-900 rounded px-2 py-1.5"><div className="text-[9px] uppercase text-gray-500">Own-it range</div><div className="font-mono text-gray-200">{range(s.assignmentComfort)}</div></div>
+        <div className="bg-gray-900 rounded px-2 py-1.5"><div className="text-[9px] uppercase text-gray-500">{cc ? 'Buy-it-today range' : 'Own-it range'}</div><div className="font-mono text-gray-200">{range(s.assignmentComfort)}</div></div>
         <div className="bg-gray-900 rounded px-2 py-1.5"><div className="text-[9px] uppercase text-gray-500">Floor range</div><div className="font-mono text-gray-200">{range(s.floor, true)}</div></div>
-        <div className="bg-gray-900 rounded px-2 py-1.5" title="Negative = model's floor is below your breakeven">
-          <div className="text-[9px] uppercase text-gray-500">Floor vs breakeven</div>
+        <div className="bg-gray-900 rounded px-2 py-1.5" title={cc ? "How far each model's floor sits below your cost basis" : "Negative = model's floor is below your breakeven"}>
+          <div className="text-[9px] uppercase text-gray-500">{cc ? 'Floor vs cost basis' : 'Floor vs breakeven'}</div>
           <div className="font-mono">
             {Object.entries(s.floorVsBreakevenPct || {}).map(([k, v]) => (
               <span key={k} className={`mr-2 ${v < 0 ? 'text-red-400' : 'text-green-400'}`}>{COUNCIL_LABEL[k] || k} {v > 0 ? '+' : ''}{v}%</span>
@@ -798,7 +812,8 @@ function SynthesisBlock({ syn }) {
   );
 }
 
-function CouncilPanel({ symbol, contract, onClose }) {
+function CouncilPanel({ symbol, contract, onClose, mode = 'put', position = null }) {
+  const cc = mode === 'cc';
   const [ctx,       setCtx]       = useState(null);
   const [opinions,  setOpinions]  = useState({});
   const [synthesis, setSynthesis] = useState(null);
@@ -813,7 +828,9 @@ function CouncilPanel({ symbol, contract, onClose }) {
     ctrlRef.current = ctrl;
     setCtx(null); setOpinions({}); setSynthesis(null); setDone(null); setErr(null); setRunning(true);
     try {
-      await streamCouncil(symbol, { contract, force }, (event, data) => {
+      const path = cc ? `/council/cc/${symbol}` : `/council/${symbol}`;
+      const body = cc ? { costBasis: position.costBasis, shares: position.shares, force } : { contract, force };
+      await streamCouncil(path, body, (event, data) => {
         if (event === 'context')   setCtx(data);
         if (event === 'opinion')   setOpinions(prev => ({ ...prev, [data.provider]: data }));
         if (event === 'synthesis') setSynthesis(data);
@@ -825,7 +842,7 @@ function CouncilPanel({ symbol, contract, onClose }) {
     } finally {
       setRunning(false);
     }
-  }, [symbol, contract]);
+  }, [symbol, contract, cc, position?.costBasis, position?.shares]);
 
   useEffect(() => { run(false); return () => ctrlRef.current?.abort(); }, [run]);
 
@@ -836,12 +853,17 @@ function CouncilPanel({ symbol, contract, onClose }) {
       <div className="flex items-center gap-3 flex-wrap">
         <span className="font-semibold text-white">AI Council</span>
         <span className="font-mono text-sm text-gray-300">
-          {symbol} {c ? `${fmt.dollar(c.strike)}P ${formatExp(c.expiration)}` : ''}
+          {cc ? `${symbol} · hold, call or exit?` : `${symbol} ${c ? `${fmt.dollar(c.strike)}P ${formatExp(c.expiration)}` : ''}`}
         </span>
-        {d.breakeven != null && (
+        {cc && d.unrealizedPnlPct != null && (
+          <span className="text-xs text-red-400">
+            {d.unrealizedPnlPct}% (−${Math.abs(d.unrealizedPnlUSD).toLocaleString('en-US', { maximumFractionDigits: 0 })}) · needs +{d.recoveryNeededPct}% to get back to {fmt.dollar(ctx.existingPosition?.costBasis)}
+          </span>
+        )}
+        {!cc && d.breakeven != null && (
           <span className="text-xs text-gray-500">breakeven <span className="font-mono text-gray-300">{fmt.dollar(d.breakeven)}</span> ({d.breakevenDiscountPct}% below spot)</span>
         )}
-        {ctx?.existingPosition && (
+        {!cc && ctx?.existingPosition && (
           <span className="text-xs text-amber-400">already own {ctx.existingPosition.shares} @ {fmt.dollar(ctx.existingPosition.costBasis)}</span>
         )}
         {ctx && <SourceBadge source={ctx.dataSource} />}
@@ -858,16 +880,33 @@ function CouncilPanel({ symbol, contract, onClose }) {
         </div>
       </div>
 
+      {cc && ctx && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {[['Call ≥ basis', ctx.contract, d.aboveBasis], ['Call < basis (target delta)', ctx.belowBasisContract, d.belowBasis]].map(([label, k, x]) => (
+            <div key={label} className="bg-gray-800 rounded-lg px-3 py-1.5">
+              <span className="text-gray-500">{label}: </span>
+              {k ? (
+                <span className="font-mono text-gray-200">
+                  {fmt.dollar(k.strike)}C {formatExp(k.expiration)} · {fmt.dollar(x?.premiumUSD)} premium ·{' '}
+                  <span className={x?.lockedInPnlIfCalledUSD < 0 ? 'text-red-400' : 'text-green-400'}>
+                    {x?.lockedInPnlIfCalledUSD < 0 ? 'locks in ' : 'if called '}{fmt.dollar(x?.lockedInPnlIfCalledUSD)}
+                  </span>
+                </span>
+              ) : <span className="text-gray-500">none in your DTE range</span>}
+            </div>
+          ))}
+        </div>
+      )}
       {err && <p className="text-sm text-red-400">{err}</p>}
       {!ctx && !err && running && <Spinner label="Pulling live data…" />}
 
       {ctx && (
         <>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {COUNCIL_MODELS.map(m => <OpinionCard key={m.key} meta={m} op={opinions[m.key]} />)}
+            {COUNCIL_MODELS.map(m => <OpinionCard key={m.key} meta={m} op={opinions[m.key]} mode={mode} />)}
           </div>
           {synthesis
-            ? <SynthesisBlock syn={synthesis} />
+            ? <SynthesisBlock syn={synthesis} mode={mode} />
             : running && Object.keys(opinions).length === COUNCIL_MODELS.length && <Spinner label="Mapping disagreements…" />}
         </>
       )}
@@ -882,7 +921,7 @@ function CouncilSpend() {
   const [open, setOpen] = useState(false);
 
   const load = useCallback(() => {
-    fetch(`${API}/council/usage`).then(r => r.ok ? r.json() : null).then(setU).catch(() => {});
+    fetch(`${API}/council/usage`, { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(setU).catch(() => {});
   }, []);
   useEffect(() => {
     load();
@@ -1279,6 +1318,7 @@ function PositionsTab() {
   const [ccLoading,       setCcLoading]       = useState({});
   const [allowBelowBasis, setAllowBelowBasis] = useState({});   // per-symbol toggle
   const [ccHeatmapSym,    setCcHeatmapSym]    = useState(null); // symbol currently showing the CC heatmap
+  const [ccCouncilSym,    setCcCouncilSym]    = useState(null); // symbol with the covered-call council open
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -1364,7 +1404,7 @@ function PositionsTab() {
   }
 
   return (
-    <div className="flex-1 overflow-auto px-6 py-6 max-w-2xl">
+    <div className={`flex-1 overflow-auto px-6 py-6 ${ccCouncilSym ? 'max-w-6xl' : 'max-w-2xl'}`}>
       <h2 className="text-sm font-semibold text-gray-300 mb-1">Positions</h2>
       <p className="text-xs text-gray-600 mb-1">Changes save immediately. The Screener uses this list on next scan. Add a cost basis and share count to run a covered-call scan.</p>
       <p className="text-xs text-gray-700 mb-5">Positions persist across redeploys as long as a Railway volume is attached to this service. Without one, edits still live in the running container and reset to <code className="text-gray-600">config.default.json</code> on the next deploy.</p>
@@ -1398,6 +1438,8 @@ function PositionsTab() {
             const isExpanded  = expandedSym === sym;
             const hasInfo     = (entryCondition && entryCondition !== 'Any') || notes || costBasis;
             const hasPosition = costBasis && shares;
+            const ccPrice     = ccResults[sym]?.price;
+            const underwater  = hasPosition && ccPrice != null && ccPrice < Number(costBasis);
 
             return (
               <div key={sym}
@@ -1444,6 +1486,15 @@ function PositionsTab() {
                       className={`ml-1.5 px-2 py-0.5 text-xs rounded-full transition-colors
                         ${ccHeatmapSym === sym ? 'bg-emerald-600 text-white' : 'bg-gray-700 hover:bg-emerald-700 text-gray-300'}`}>
                       ≡
+                    </button>
+                  )}
+                  {underwater && (
+                    <button
+                      onClick={e => { e.stopPropagation(); setCcCouncilSym(prev => prev === sym ? null : sym); }}
+                      title={`${sym} is below your basis — ask the Council: call above basis, call below, hold, or exit?`}
+                      className={`ml-1.5 px-2 py-0.5 text-xs rounded-full transition-colors
+                        ${ccCouncilSym === sym ? 'bg-indigo-600 text-white' : 'bg-gray-700 hover:bg-indigo-700 text-gray-300'}`}>
+                      Council
                     </button>
                   )}
                   <button
@@ -1514,6 +1565,15 @@ function PositionsTab() {
                         className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-full"
                       />
                     </div>
+                  </div>
+                )}
+
+                {/* covered-call council (underwater positions only) */}
+                {ccCouncilSym === sym && underwater && (
+                  <div className="border-t border-gray-700 rounded-b-xl overflow-hidden">
+                    <CouncilPanel symbol={sym} mode="cc"
+                      position={{ costBasis: Number(costBasis), shares: Number(shares) }}
+                      onClose={() => setCcCouncilSym(null)} />
                   </div>
                 )}
 
