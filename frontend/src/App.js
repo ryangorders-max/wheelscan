@@ -627,6 +627,255 @@ function HeatmapPanel({
   );
 }
 
+// ─── AI COUNCIL ──────────────────────────────────────────────────────────────
+// Streams POST /council/{symbol} (Server-Sent Events): context → 3 opinions as
+// each model finishes → synthesis (disagreement map) → done (cost).
+
+const COUNCIL_MODELS = [
+  { key: 'claude', label: 'Claude', color: 'text-orange-300', border: 'border-orange-800/60' },
+  { key: 'openai', label: 'GPT',    color: 'text-emerald-300', border: 'border-emerald-800/60' },
+  { key: 'gemini', label: 'Gemini', color: 'text-sky-300',     border: 'border-sky-800/60' },
+];
+const COUNCIL_LABEL = Object.fromEntries(COUNCIL_MODELS.map(m => [m.key, m.label]));
+const VERDICT_STYLE = {
+  sell_put: 'bg-green-900/60 text-green-300',
+  wait:     'bg-yellow-900/60 text-yellow-300',
+  pass:     'bg-red-900/60 text-red-300',
+};
+
+async function streamCouncil(symbol, body, onEvent, signal) {
+  const res = await fetch(`${API}/council/${symbol}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let event = 'message', data = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) event = line.slice(7);
+        else if (line.startsWith('data: ')) data += line.slice(6);
+      }
+      if (data) onEvent(event, JSON.parse(data));
+    }
+  }
+}
+
+function Score({ label, value }) {
+  const cls = value == null ? 'text-gray-500' : value >= 7 ? 'text-green-400' : value >= 5 ? 'text-yellow-400' : 'text-red-400';
+  return (
+    <div className="bg-gray-900 rounded px-2 py-1">
+      <div className="text-[9px] uppercase tracking-wide text-gray-500">{label}</div>
+      <div className={`font-mono text-sm ${cls}`}>{value ?? '—'}{value != null && <span className="text-gray-600">/10</span>}</div>
+    </div>
+  );
+}
+
+function OpinionCard({ meta, op }) {
+  const r = op?.result;
+  return (
+    <div className={`bg-gray-800/70 border ${meta.border} rounded-xl p-3 flex flex-col gap-2 min-w-0`}>
+      <div className="flex items-center gap-2">
+        <span className={`font-semibold ${meta.color}`}>{meta.label}</span>
+        {op?.model && <span className="text-[10px] text-gray-500 font-mono truncate">{op.model}</span>}
+        {r?.verdict && (
+          <span className={`ml-auto text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded ${VERDICT_STYLE[r.verdict] || 'bg-gray-700 text-gray-300'}`}>
+            {String(r.verdict).replace('_', ' ')}
+          </span>
+        )}
+      </div>
+
+      {!op && <Spinner label="Thinking…" />}
+      {op?.error && <p className={`text-xs ${op.skipped ? 'text-gray-500' : 'text-red-400'}`}>{op.error}</p>}
+
+      {r && (
+        <>
+          <div className="grid grid-cols-3 gap-1.5">
+            <Score label="Conviction" value={r.conviction} />
+            <Score label="Own it?" value={r.assignment_comfort} />
+            <div className="bg-gray-900 rounded px-2 py-1">
+              <div className="text-[9px] uppercase tracking-wide text-gray-500">Floor</div>
+              <div className="font-mono text-sm text-indigo-300">{fmt.dollar(r.fair_value_floor)}</div>
+            </div>
+          </div>
+          {r.floor_reasoning && <p className="text-xs text-gray-400">{r.floor_reasoning}</p>}
+          <div className="text-xs">
+            <div className="text-green-400/80 font-semibold mb-0.5">Bull</div>
+            <ul className="list-disc pl-4 text-gray-300 space-y-0.5">{(r.bull_case || []).map((b, i) => <li key={i}>{b}</li>)}</ul>
+          </div>
+          <div className="text-xs">
+            <div className="text-red-400/80 font-semibold mb-0.5">Bear</div>
+            <ul className="list-disc pl-4 text-gray-300 space-y-0.5">{(r.bear_case || []).map((b, i) => <li key={i}>{b}</li>)}</ul>
+          </div>
+          {r.key_risk && <p className="text-xs text-orange-300"><span className="font-semibold">Key risk:</span> {r.key_risk}</p>}
+          {r.better_strike != null && <p className="text-xs text-gray-400">Would prefer strike <span className="font-mono text-indigo-300">{fmt.dollar(r.better_strike)}</span></p>}
+          {r.stale_knowledge_flags?.length > 0 && (
+            <p className="text-[11px] text-amber-400/80">⚠ From memory, may be stale: {r.stale_knowledge_flags.join('; ')}</p>
+          )}
+          <div className="text-[10px] text-gray-600 font-mono mt-auto">
+            {op.seconds}s · {op.tokensIn}→{op.tokensOut} tok · {op.costUSD != null ? `$${op.costUSD.toFixed(4)}` : 'cost ?'}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SynthesisBlock({ syn }) {
+  if (!syn) return null;
+  const s = syn.spread || {};
+  const m = syn.map;
+  const range = (x, money) => x ? `${money ? fmt.dollar(x.min) : x.min} – ${money ? fmt.dollar(x.max) : x.max}` : '—';
+  return (
+    <div className="bg-indigo-950/30 border border-indigo-800/50 rounded-xl p-4 flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-indigo-300">Where they disagree</span>
+        {s.unanimous && <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-gray-700 text-gray-300" title="Models trained on similar data often share blind spots">unanimous — weak evidence</span>}
+        {syn.model && <span className="ml-auto text-[10px] text-gray-500 font-mono">referee: {syn.model}</span>}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div className="bg-gray-900 rounded px-2 py-1.5"><div className="text-[9px] uppercase text-gray-500">Conviction range</div><div className="font-mono text-gray-200">{range(s.conviction)}</div></div>
+        <div className="bg-gray-900 rounded px-2 py-1.5"><div className="text-[9px] uppercase text-gray-500">Own-it range</div><div className="font-mono text-gray-200">{range(s.assignmentComfort)}</div></div>
+        <div className="bg-gray-900 rounded px-2 py-1.5"><div className="text-[9px] uppercase text-gray-500">Floor range</div><div className="font-mono text-gray-200">{range(s.floor, true)}</div></div>
+        <div className="bg-gray-900 rounded px-2 py-1.5" title="Negative = model's floor is below your breakeven">
+          <div className="text-[9px] uppercase text-gray-500">Floor vs breakeven</div>
+          <div className="font-mono">
+            {Object.entries(s.floorVsBreakevenPct || {}).map(([k, v]) => (
+              <span key={k} className={`mr-2 ${v < 0 ? 'text-red-400' : 'text-green-400'}`}>{COUNCIL_LABEL[k] || k} {v > 0 ? '+' : ''}{v}%</span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {syn.error && <p className="text-xs text-red-400">{syn.error}</p>}
+
+      {m && (
+        <>
+          {m.question_to_resolve && (
+            <div className="bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2 text-sm text-amber-200">
+              <span className="font-semibold">Check before trading:</span> {m.question_to_resolve}
+            </div>
+          )}
+          {(m.disagreements || []).map((d, i) => (
+            <div key={i} className="text-xs">
+              <div className="font-semibold text-gray-200">{d.topic}</div>
+              <div className="flex flex-col gap-0.5 mt-0.5">
+                {Object.entries(d.positions || {}).map(([k, v]) => (
+                  <div key={k}><span className="text-gray-500 font-semibold">{COUNCIL_LABEL[k] || k}:</span> <span className="text-gray-300">{v}</span></div>
+                ))}
+              </div>
+              {d.why_it_matters && <div className="text-gray-500 italic mt-0.5">{d.why_it_matters}</div>}
+            </div>
+          ))}
+          {m.consensus?.length > 0 && (
+            <div className="text-xs"><span className="font-semibold text-gray-400">Agree on:</span> <span className="text-gray-400">{m.consensus.join(' · ')}</span></div>
+          )}
+          {m.unverified_claims?.length > 0 && (
+            <div className="text-xs">
+              <div className="font-semibold text-amber-400/90 mb-0.5">Verify these</div>
+              <ul className="list-disc pl-4 text-gray-400 space-y-0.5">
+                {m.unverified_claims.map((u, i) => (
+                  <li key={i}>{u.claim} <span className="text-gray-600">({(u.from || []).map(k => COUNCIL_LABEL[k] || k).join(', ')})</span>{u.check && <span className="text-gray-500"> — {u.check}</span>}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CouncilPanel({ symbol, contract, onClose }) {
+  const [ctx,       setCtx]       = useState(null);
+  const [opinions,  setOpinions]  = useState({});
+  const [synthesis, setSynthesis] = useState(null);
+  const [done,      setDone]      = useState(null);
+  const [err,       setErr]       = useState(null);
+  const [running,   setRunning]   = useState(false);
+  const ctrlRef = useRef(null);
+
+  const run = useCallback(async (force = false) => {
+    if (ctrlRef.current) ctrlRef.current.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
+    setCtx(null); setOpinions({}); setSynthesis(null); setDone(null); setErr(null); setRunning(true);
+    try {
+      await streamCouncil(symbol, { contract, force }, (event, data) => {
+        if (event === 'context')   setCtx(data);
+        if (event === 'opinion')   setOpinions(prev => ({ ...prev, [data.provider]: data }));
+        if (event === 'synthesis') setSynthesis(data);
+        if (event === 'done')      setDone(data);
+        if (event === 'error')     setErr(data.message);
+      }, ctrl.signal);
+    } catch (e) {
+      if (e.name !== 'AbortError') setErr(e.message);
+    } finally {
+      setRunning(false);
+    }
+  }, [symbol, contract]);
+
+  useEffect(() => { run(false); return () => ctrlRef.current?.abort(); }, [run]);
+
+  const c = ctx?.contract || contract;
+  const d = ctx?.derived || {};
+  return (
+    <div className="bg-gray-900/80 px-4 py-4 flex flex-col gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="font-semibold text-white">AI Council</span>
+        <span className="font-mono text-sm text-gray-300">
+          {symbol} {c ? `${fmt.dollar(c.strike)}P ${formatExp(c.expiration)}` : ''}
+        </span>
+        {d.breakeven != null && (
+          <span className="text-xs text-gray-500">breakeven <span className="font-mono text-gray-300">{fmt.dollar(d.breakeven)}</span> ({d.breakevenDiscountPct}% below spot)</span>
+        )}
+        {ctx?.existingPosition && (
+          <span className="text-xs text-amber-400">already own {ctx.existingPosition.shares} @ {fmt.dollar(ctx.existingPosition.costBasis)}</span>
+        )}
+        {ctx && <SourceBadge source={ctx.dataSource} />}
+        <div className="ml-auto flex items-center gap-2">
+          {done && (
+            <span className="text-[11px] text-gray-500 font-mono">
+              {done.cached ? 'cached today · $0' : `run $${done.runCostUSD.toFixed(3)}`} · month ${done.monthSpendUSD?.toFixed(2)} / ${done.capUSD}
+            </span>
+          )}
+          <button disabled={running} onClick={() => run(true)}
+            className="px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-200"
+            title="Ignore today's cache and pay for a fresh run">↻ Re-run</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
+        </div>
+      </div>
+
+      {err && <p className="text-sm text-red-400">{err}</p>}
+      {!ctx && !err && running && <Spinner label="Pulling live data…" />}
+
+      {ctx && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {COUNCIL_MODELS.map(m => <OpinionCard key={m.key} meta={m} op={opinions[m.key]} />)}
+          </div>
+          {synthesis
+            ? <SynthesisBlock syn={synthesis} />
+            : running && Object.keys(opinions).length === COUNCIL_MODELS.length && <Spinner label="Mapping disagreements…" />}
+        </>
+      )}
+      <p className="text-[10px] text-gray-600">Model opinions, not advice. Agreement between models is weak evidence — they share training data and blind spots.</p>
+    </div>
+  );
+}
+
 // ─── SCREENER TABLE COLUMNS ──────────────────────────────────────────────────
 
 const COLUMNS = [
@@ -703,6 +952,7 @@ function ScreenerTab({ minROC }) {
   const [sortKey,        setSortKey]        = useState('roc');
   const [sortDir,        setSortDir]        = useState('desc');
   const [expandedSymbol, setExpandedSymbol] = useState(null);
+  const [councilSymbol,  setCouncilSymbol]  = useState(null);
   const [earnWarnings,   setEarnWarnings]   = useState([]);
   const abortRef = useRef(null);
 
@@ -721,6 +971,7 @@ function ScreenerTab({ minROC }) {
     setScanErr(null);
     setLoading(true);
     setExpandedSymbol(null);
+    setCouncilSymbol(null);
     try {
       const res = await fetch(`${API}/scan`, { signal: ctrl.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -852,6 +1103,15 @@ function ScreenerTab({ minROC }) {
                         <td className="px-3 py-2 font-mono font-bold text-white whitespace-nowrap">
                           <span className={`mr-1.5 text-xs transition-transform inline-block ${isExpanded ? 'text-indigo-400 rotate-90' : 'text-gray-600'}`}>▶</span>
                           {row.symbol}
+                          {c && (
+                            <button
+                              onClick={e => { e.stopPropagation(); setCouncilSymbol(prev => prev === row.symbol ? null : row.symbol); }}
+                              title="Ask Claude, GPT and Gemini about this put"
+                              className={`ml-2 px-1.5 py-0.5 text-[10px] font-semibold rounded transition-colors
+                                ${councilSymbol === row.symbol ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-indigo-800 hover:text-white'}`}>
+                              Council
+                            </button>
+                          )}
                         </td>
                         <td className="px-3 py-2 font-mono text-gray-300">{fmt.dollar(row.price)}</td>
                         <td className="px-3 py-2 font-mono text-gray-300">{fmt.pct1(row.iv30)}</td>
@@ -882,6 +1142,15 @@ function ScreenerTab({ minROC }) {
                             : <span title="Within collateral cap">✅</span>}
                         </td>
                       </tr>
+
+                      {/* AI council row */}
+                      {councilSymbol === row.symbol && c && (
+                        <tr className="border-b-2 border-indigo-900">
+                          <td colSpan={COLUMNS.length} className="p-0">
+                            <CouncilPanel symbol={row.symbol} contract={c} onClose={() => setCouncilSymbol(null)} />
+                          </td>
+                        </tr>
+                      )}
 
                       {/* accordion heatmap row */}
                       {isExpanded && (

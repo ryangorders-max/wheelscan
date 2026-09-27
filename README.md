@@ -30,6 +30,26 @@ SCHWAB_OAUTH_SERVICE_SECRET=<same value as schwab-oauth-service's SCHWAB_PROXY_S
 
 Leaving these unset just means every request falls back to yfinance — nothing breaks.
 
+### AI Council (optional)
+
+Each screener row has a **Council** button. It sends that put (plus live price,
+IV/HV, earnings date, your existing position and recent headlines) to Claude,
+GPT and Gemini in parallel, then a referee pass maps where they disagree. Results
+are cached per symbol/strike/expiry for the day; re-opening is free.
+
+Set on Railway (any provider without a key is skipped):
+
+```bash
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...
+GEMINI_API_KEY=...
+COUNCIL_MONTHLY_CAP_USD=10        # hard stop on spend
+```
+
+Optional: `COUNCIL_CLAUDE_MODEL`, `COUNCIL_OPENAI_MODEL`, `COUNCIL_GEMINI_MODEL`,
+`COUNCIL_SYNTH_PROVIDER` / `COUNCIL_SYNTH_MODEL`, `COUNCIL_MAX_RUNS_PER_HOUR`.
+Month-to-date spend: `GET /council/usage`. See `backend/council.py` for details.
+
 ## Frontend (React — port 3000)
 
 In a separate terminal:

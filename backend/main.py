@@ -6,7 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
+from fastapi.responses import StreamingResponse
+
 from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings, get_covered_call, get_covered_call_heatmap
+import council
 
 BASE_DIR           = Path(__file__).parent
 # DATA_DIR points at a persistent Railway volume when RAILWAY_VOLUME_MOUNT_PATH
@@ -30,6 +33,7 @@ def _bootstrap() -> None:
 
 
 _bootstrap()
+council.init_storage(DATA_DIR)
 
 app = FastAPI(title="WheelScan API")
 
@@ -176,3 +180,37 @@ def heatmap(symbol: str):
     """Wide-range options surface for the heatmap view (DTE 7-60, all strikes)."""
     cfg = read_config()
     return get_heatmap(symbol.upper(), cfg)
+
+
+# ─── AI Council ─────────────────────────────────────────────────────────────
+
+class CouncilRequest(BaseModel):
+    # Optional: the exact contract to evaluate (e.g. a pinned heatmap cell).
+    # Omit to use the screener's best contract for this symbol.
+    contract: Optional[dict] = None
+    force:    bool = False   # bypass today's cache (costs a fresh run)
+
+
+@app.post("/council/{symbol}")
+async def council_run(symbol: str, req: CouncilRequest):
+    """
+    Streams Server-Sent Events: context → opinion ×3 (as each model finishes)
+    → synthesis (disagreement map) → done (cost). One run ≈ 4 paid calls.
+    """
+    cfg = read_config()
+
+    async def events():
+        async for event, data in council.run_council(symbol.upper(), cfg, req.contract, req.force):
+            yield f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/council/usage")
+def council_usage():
+    """Month-to-date council spend, run count, and which providers are configured."""
+    return council.usage_summary()
