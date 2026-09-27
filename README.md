@@ -45,6 +45,7 @@ OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 COUNCIL_MONTHLY_CAP_USD=10        # hard stop on spend
 COUNCIL_FREE_PROVIDERS=gemini     # providers on a free tier are logged at $0
+TOOLING_FIXED_COSTS=Railway=5     # monthly bills that exist only because of trading
 ```
 
 Optional: `COUNCIL_CLAUDE_MODEL`, `COUNCIL_OPENAI_MODEL`, `COUNCIL_GEMINI_MODEL`,

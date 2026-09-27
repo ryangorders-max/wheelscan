@@ -899,14 +899,18 @@ function CouncilSpend() {
       <button onClick={() => setOpen(o => !o)}
         className="flex flex-col items-start px-3 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700"
         title="AI Council spend this month">
-        <span className="text-[10px] uppercase tracking-wide text-gray-500">AI cost · {u.month}</span>
-        <span className={`font-mono text-sm ${tone}`}>{money(u.spendUSD)} <span className="text-gray-600">/ {money(u.capUSD)}</span></span>
+        <span className="text-[10px] uppercase tracking-wide text-gray-500">Tooling cost · {u.month}</span>
+        <span className="font-mono text-sm text-gray-200">
+          {money(u.toolingTotalUSD ?? u.spendUSD)}
+          <span className={`ml-1.5 text-[11px] ${tone}`} title="AI spend vs monthly cap">AI {money(u.spendUSD)}/{money(u.capUSD)}</span>
+        </span>
       </button>
       {open && (
-        <div className="absolute right-0 mt-2 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-3 text-xs z-30 flex flex-col gap-2">
+        <div className="absolute right-0 mt-2 w-80 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-3 text-xs z-30 flex flex-col gap-2">
           <div className="grid grid-cols-2 gap-2">
             {[
-              ['Spent', money(u.spendUSD)], ['Projected month', money(u.projectedMonthUSD)],
+              ['Tooling so far', money(u.toolingTotalUSD)], ['Tooling projected', money(u.toolingProjectedUSD)],
+              ['AI spent', money(u.spendUSD)], ['AI projected', money(u.projectedMonthUSD)],
               ['Runs', u.runs], ['Avg per run', u.avgPerRunUSD != null ? `$${u.avgPerRunUSD.toFixed(3)}` : '—'],
             ].map(([l, v]) => (
               <div key={l} className="bg-gray-800 rounded px-2 py-1.5">
@@ -915,6 +919,14 @@ function CouncilSpend() {
               </div>
             ))}
           </div>
+          {Object.keys(u.fixedCosts || {}).length > 0 && (
+            <div>
+              <div className="text-[9px] uppercase text-gray-500 mb-1">Fixed monthly</div>
+              {Object.entries(u.fixedCosts).map(([n, c]) => (
+                <div key={n} className="flex justify-between font-mono text-gray-300"><span>{n}</span><span>${c.toFixed(2)}</span></div>
+              ))}
+            </div>
+          )}
           {Object.keys(u.byModel || {}).length > 0 && (
             <div>
               <div className="text-[9px] uppercase text-gray-500 mb-1">By model</div>
@@ -931,12 +943,12 @@ function CouncilSpend() {
               <div className="text-[9px] uppercase text-gray-500 mb-1">History</div>
               {u.history.map(h => (
                 <div key={h.month} className="flex justify-between font-mono text-gray-400">
-                  <span>{h.month}</span><span>{h.runs} run{h.runs === 1 ? '' : 's'} · ${h.spendUSD.toFixed(2)}</span>
+                  <span>{h.month}</span><span title={`AI $${h.spendUSD.toFixed(2)} + fixed`}>{h.runs} run{h.runs === 1 ? '' : 's'} · ${(h.totalUSD ?? h.spendUSD).toFixed(2)}</span>
                 </div>
               ))}
             </div>
           )}
-          <div className="text-[10px] text-gray-600">Estimated from token counts × list prices. Your provider invoices are the source of truth.</div>
+          <div className="text-[10px] text-gray-600">AI is estimated from token counts × list prices; fixed costs are what you set in TOOLING_FIXED_COSTS. Your invoices are the source of truth.</div>
         </div>
       )}
     </div>

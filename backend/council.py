@@ -27,6 +27,7 @@ Env vars:
   COUNCIL_MONTHLY_CAP_USD          default 10
   COUNCIL_MAX_RUNS_PER_HOUR        default 20   (fresh runs; cache hits are free)
   COUNCIL_FREE_PROVIDERS           e.g. "gemini" — logged at $0 while you're on its free tier
+  TOOLING_FIXED_COSTS              e.g. "Railway=5" — monthly bills that exist only because of trading
 """
 from __future__ import annotations
 
@@ -78,6 +79,24 @@ MAX_RUNS_PER_HOUR = int(os.environ.get("COUNCIL_MAX_RUNS_PER_HOUR", "20"))
 # Providers you use on a free tier (e.g. "gemini"). Their calls are logged at $0
 # actual cost, with the paid-price equivalent kept as listCost for reference.
 FREE_PROVIDERS = {p.strip() for p in os.environ.get("COUNCIL_FREE_PROVIDERS", "").split(",") if p.strip()}
+
+
+def _parse_fixed_costs(raw: str) -> dict[str, float]:
+    """TOOLING_FIXED_COSTS="Railway=5,Market data=0" -> {"Railway": 5.0, ...}.
+    Monthly costs that exist only because of trading. Bad entries are ignored."""
+    out: dict[str, float] = {}
+    for part in raw.split(","):
+        if "=" not in part:
+            continue
+        name, _, val = part.partition("=")
+        try:
+            out[name.strip()] = float(val.strip().lstrip("$"))
+        except ValueError:
+            pass
+    return {k: v for k, v in out.items() if k}
+
+
+FIXED_COSTS = _parse_fixed_costs(os.environ.get("TOOLING_FIXED_COSTS", ""))
 CALL_TIMEOUT = 120  # seconds per model call
 
 # USD per 1M tokens (input, output). Checked Sep 2026 against each provider's
@@ -200,14 +219,21 @@ def usage_summary() -> dict:
         if r.get("run_id"):
             h["_runs"].add(r["run_id"])
     history_list = [
-        {"month": m, "spendUSD": round(h["spendUSD"], 4), "runs": len(h["_runs"])}
+        {"month": m, "spendUSD": round(h["spendUSD"], 4), "runs": len(h["_runs"]),
+         "totalUSD": round(h["spendUSD"] + sum(FIXED_COSTS.values()), 2)}
         for m, h in sorted(history.items(), reverse=True)
     ]
+    fixed_total = round(sum(FIXED_COSTS.values()), 2)
 
     return {
         "month": month,
         "spendUSD": round(spend, 4),
         "projectedMonthUSD": round(projected, 2),
+        "fixedCosts": FIXED_COSTS,
+        "fixedTotalUSD": fixed_total,
+        # what trading tooling costs you this month: fixed bills + AI usage so far
+        "toolingTotalUSD": round(fixed_total + spend, 2),
+        "toolingProjectedUSD": round(fixed_total + projected, 2),
         "freeTierSavingsUSD": round(list_spend - spend, 4),
         "capUSD": MONTHLY_CAP,
         "runs": len(runs),
