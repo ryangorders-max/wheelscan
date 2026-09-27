@@ -49,8 +49,8 @@ TOOLING_FIXED_COSTS=Railway=5     # monthly bills that exist only because of tra
 ```
 
 Optional: `COUNCIL_CLAUDE_MODEL`, `COUNCIL_OPENAI_MODEL`, `COUNCIL_GEMINI_MODEL`,
-`COUNCIL_SYNTH_PROVIDER` / `COUNCIL_SYNTH_MODEL`, `COUNCIL_MAX_RUNS_PER_HOUR`.
-Month-to-date spend, projection and monthly history: the **AI cost** badge in the top bar, or `GET /council/usage`. See `backend/council.py` for details.
+`COUNCIL_SYNTH_PROVIDER` (e.g. `gemini`) / `COUNCIL_SYNTH_MODEL`, `COUNCIL_MAX_RUNS_PER_HOUR`.
+Month-to-date spend, projection and monthly history: the **Tooling cost** badge in the top bar, or `GET /council/usage`. See `backend/council.py` for details.
 
 ## Frontend (React — port 3000)
 
