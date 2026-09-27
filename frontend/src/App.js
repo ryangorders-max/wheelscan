@@ -817,7 +817,7 @@ function CouncilPanel({ symbol, contract, onClose }) {
         if (event === 'context')   setCtx(data);
         if (event === 'opinion')   setOpinions(prev => ({ ...prev, [data.provider]: data }));
         if (event === 'synthesis') setSynthesis(data);
-        if (event === 'done')      setDone(data);
+        if (event === 'done')      { setDone(data); window.dispatchEvent(new Event('council-done')); }
         if (event === 'error')     setErr(data.message);
       }, ctrl.signal);
     } catch (e) {
@@ -872,6 +872,73 @@ function CouncilPanel({ symbol, contract, onClose }) {
         </>
       )}
       <p className="text-[10px] text-gray-600">Model opinions, not advice. Agreement between models is weak evidence — they share training data and blind spots.</p>
+    </div>
+  );
+}
+
+// Month-to-date AI spend badge (top bar). Refreshes on load and after each council run.
+function CouncilSpend() {
+  const [u,    setU]    = useState(null);
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(() => {
+    fetch(`${API}/council/usage`).then(r => r.ok ? r.json() : null).then(setU).catch(() => {});
+  }, []);
+  useEffect(() => {
+    load();
+    window.addEventListener('council-done', load);
+    return () => window.removeEventListener('council-done', load);
+  }, [load]);
+
+  if (!u) return null;
+  const pct = u.capUSD ? u.spendUSD / u.capUSD : 0;
+  const tone = pct >= 0.8 ? 'text-red-400' : pct >= 0.5 ? 'text-yellow-400' : 'text-green-400';
+  const money = v => v == null ? '—' : `$${Number(v).toFixed(2)}`;
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)}
+        className="flex flex-col items-start px-3 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700"
+        title="AI Council spend this month">
+        <span className="text-[10px] uppercase tracking-wide text-gray-500">AI cost · {u.month}</span>
+        <span className={`font-mono text-sm ${tone}`}>{money(u.spendUSD)} <span className="text-gray-600">/ {money(u.capUSD)}</span></span>
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-3 text-xs z-30 flex flex-col gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              ['Spent', money(u.spendUSD)], ['Projected month', money(u.projectedMonthUSD)],
+              ['Runs', u.runs], ['Avg per run', u.avgPerRunUSD != null ? `$${u.avgPerRunUSD.toFixed(3)}` : '—'],
+            ].map(([l, v]) => (
+              <div key={l} className="bg-gray-800 rounded px-2 py-1.5">
+                <div className="text-[9px] uppercase text-gray-500">{l}</div>
+                <div className="font-mono text-gray-200">{v}</div>
+              </div>
+            ))}
+          </div>
+          {Object.keys(u.byModel || {}).length > 0 && (
+            <div>
+              <div className="text-[9px] uppercase text-gray-500 mb-1">By model</div>
+              {Object.entries(u.byModel).map(([m, c]) => (
+                <div key={m} className="flex justify-between font-mono text-gray-300">
+                  <span className="truncate mr-2">{m}{u.freeProviders?.some(p => m.startsWith(p === 'openai' ? 'gpt' : p)) ? ' (free)' : ''}</span><span>${c.toFixed(3)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {u.freeTierSavingsUSD > 0 && <div className="text-gray-500">Free tier saved ${u.freeTierSavingsUSD.toFixed(3)} this month</div>}
+          {u.history?.length > 0 && (
+            <div>
+              <div className="text-[9px] uppercase text-gray-500 mb-1">History</div>
+              {u.history.map(h => (
+                <div key={h.month} className="flex justify-between font-mono text-gray-400">
+                  <span>{h.month}</span><span>{h.runs} run{h.runs === 1 ? '' : 's'} · ${h.spendUSD.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="text-[10px] text-gray-600">Estimated from token counts × list prices. Your provider invoices are the source of truth.</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1563,8 +1630,10 @@ export default function App() {
               className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-indigo-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 text-right" />
           </div>
 
-          {/* tab switcher */}
-          <div className="ml-auto flex items-center gap-0.5 bg-gray-800 rounded-lg p-0.5">
+          {/* AI spend + tab switcher */}
+          <div className="ml-auto flex items-center gap-3">
+          <CouncilSpend />
+          <div className="flex items-center gap-0.5 bg-gray-800 rounded-lg p-0.5">
             {['screener', 'positions'].map(t => (
               <button key={t} onClick={() => setTab(t)}
                 className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors capitalize
@@ -1572,6 +1641,7 @@ export default function App() {
                 {t.charAt(0).toUpperCase() + t.slice(1)}
               </button>
             ))}
+          </div>
           </div>
         </div>
       </div>

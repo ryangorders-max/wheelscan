@@ -26,6 +26,7 @@ Env vars:
   COUNCIL_OPENAI_REASONING_EFFORT  default low  (set to "none" to omit the param)
   COUNCIL_MONTHLY_CAP_USD          default 10
   COUNCIL_MAX_RUNS_PER_HOUR        default 20   (fresh runs; cache hits are free)
+  COUNCIL_FREE_PROVIDERS           e.g. "gemini" — logged at $0 while you're on its free tier
 """
 from __future__ import annotations
 
@@ -74,6 +75,9 @@ SYNTH_MODEL = os.environ.get("COUNCIL_SYNTH_MODEL") or PROVIDERS.get(SYNTH_PROVI
 OPENAI_EFFORT = os.environ.get("COUNCIL_OPENAI_REASONING_EFFORT", "low")
 MONTHLY_CAP = float(os.environ.get("COUNCIL_MONTHLY_CAP_USD", "10"))
 MAX_RUNS_PER_HOUR = int(os.environ.get("COUNCIL_MAX_RUNS_PER_HOUR", "20"))
+# Providers you use on a free tier (e.g. "gemini"). Their calls are logged at $0
+# actual cost, with the paid-price equivalent kept as listCost for reference.
+FREE_PROVIDERS = {p.strip() for p in os.environ.get("COUNCIL_FREE_PROVIDERS", "").split(",") if p.strip()}
 CALL_TIMEOUT = 120  # seconds per model call
 
 # USD per 1M tokens (input, output). Checked Sep 2026 against each provider's
@@ -169,22 +173,48 @@ def _read_usage() -> list[dict]:
 
 
 def usage_summary() -> dict:
+    import calendar
     now = datetime.now(_NY)
     month = now.strftime("%Y-%m")
     rows = _read_usage()
     month_rows = [r for r in rows if r.get("ts", "").startswith(month)]
     runs = {r["run_id"] for r in month_rows if r.get("run_id")}
     spend = sum(r.get("cost") or 0 for r in month_rows)
+    list_spend = sum(r.get("listCost", r.get("cost")) or 0 for r in month_rows)
     by_model: dict[str, float] = {}
     for r in month_rows:
         by_model[r.get("model", "?")] = round(by_model.get(r.get("model", "?"), 0) + (r.get("cost") or 0), 4)
+
+    # straight-line projection to month end from days elapsed
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    projected = spend / now.day * days_in_month if spend else 0.0
+
+    # every month on record, newest first — this is your running cost ledger
+    history: dict[str, dict] = {}
+    for r in rows:
+        m = r.get("ts", "")[:7]
+        if not m:
+            continue
+        h = history.setdefault(m, {"month": m, "spendUSD": 0.0, "_runs": set()})
+        h["spendUSD"] += r.get("cost") or 0
+        if r.get("run_id"):
+            h["_runs"].add(r["run_id"])
+    history_list = [
+        {"month": m, "spendUSD": round(h["spendUSD"], 4), "runs": len(h["_runs"])}
+        for m, h in sorted(history.items(), reverse=True)
+    ]
+
     return {
         "month": month,
         "spendUSD": round(spend, 4),
+        "projectedMonthUSD": round(projected, 2),
+        "freeTierSavingsUSD": round(list_spend - spend, 4),
         "capUSD": MONTHLY_CAP,
         "runs": len(runs),
         "avgPerRunUSD": round(spend / len(runs), 4) if runs else None,
         "byModel": by_model,
+        "history": history_list,
+        "freeProviders": sorted(FREE_PROVIDERS),
         "configuredProviders": configured_providers(),
         "models": {k: PROVIDERS[k]["model"] for k in PROVIDERS},
         "synthesis": {"provider": SYNTH_PROVIDER, "model": SYNTH_MODEL},
@@ -444,9 +474,10 @@ async def _ask(client, provider: str, model: str, system: str, prompt: str, run_
         text, tin, tout = await CALLERS[provider](client, model, system, prompt)
     except Exception as e:
         return {"provider": provider, "model": model, "error": _http_error(e)}
-    cost = _cost(model, tin, tout)
+    list_cost = _cost(model, tin, tout)
+    cost = 0.0 if provider in FREE_PROVIDERS else list_cost
     log_usage({"ts": t0.isoformat(), "run_id": run_id, "role": role, "provider": provider,
-               "model": model, "in": tin, "out": tout, "cost": cost})
+               "model": model, "in": tin, "out": tout, "cost": cost, "listCost": list_cost})
     base = {"provider": provider, "model": model, "tokensIn": tin, "tokensOut": tout, "costUSD": cost,
             "seconds": round((datetime.now(_NY) - t0).total_seconds(), 1)}
     try:
