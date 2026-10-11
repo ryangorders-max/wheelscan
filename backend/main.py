@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from fastapi.responses import StreamingResponse
 
-from data import scan_watchlist, get_stock_info, get_heatmap, score_results, earnings_warnings, get_covered_call, get_covered_call_heatmap
+from data import scan_watchlist, get_stock_info, get_heatmap, score_results, record_iv_history, earnings_warnings, get_covered_call, get_covered_call_heatmap
 import council
 
 BASE_DIR           = Path(__file__).parent
@@ -22,6 +22,7 @@ DATA_DIR           = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", BASE_DIR))
 CONFIG_PATH        = DATA_DIR / "config.json"
 CONFIG_DEFAULT     = BASE_DIR / "config.default.json"
 POSITIONS_PATH     = BASE_DIR / "positions.json"  # read-only for earnings warnings
+IV_HISTORY_PATH    = DATA_DIR / "iv_history.json"  # daily iv30 per symbol, for IV percentile
 
 
 def _bootstrap() -> None:
@@ -54,7 +55,11 @@ class WatchlistItem(BaseModel):
 
 
 class Config(BaseModel):
+    # Collateral and premium are UI filters only — never part of wheelScore.
     collateralCap: int
+    collateralFloor: int = 0
+    minPremium: float = 0          # $ per contract (mid x 100)
+    hideEarningsInWindow: bool = True
     minROC: float
     targetROC: float
     targetDelta: float
@@ -87,6 +92,10 @@ def _normalize_watchlist(raw: list) -> list[dict]:
 def read_config() -> dict:
     with CONFIG_PATH.open() as f:
         data = json.load(f)
+    # fields added after the volume's config.json was first written
+    data.setdefault("collateralFloor", 0)
+    data.setdefault("minPremium", 0)
+    data.setdefault("hideEarningsInWindow", True)
     data["watchlist"] = _normalize_watchlist(data.get("watchlist", []))
     return data
 
@@ -113,6 +122,7 @@ def _symbols(cfg: dict) -> list[str]:
 def scan():
     cfg = read_config()
     results = scan_watchlist(_symbols(cfg), cfg)
+    record_iv_history(results, IV_HISTORY_PATH)
     return score_results(results)
 
 

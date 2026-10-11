@@ -1033,6 +1033,17 @@ function getValue(row, col) {
   }
 }
 
+// Labels + max points for the wheelScore breakdown tooltip (see score_results).
+const SCORE_LABELS = {
+  premium:      'Premium /15',
+  edge:         'IV over HV /10',
+  ivPercentile: 'IV percentile /10',
+  earnings:     'Earnings /20',
+  liquidity:    'Open interest /15',
+  spread:       'Bid-ask /10',
+  trend:        'Trend /20',
+};
+
 // ─── Earnings proximity helper ───────────────────────────────────────────────
 // Returns { icon, colorCls, title } describing how close earnings are to expiry.
 function earningsProximity(earningsDateStr, expirationStr, earningsInWindow) {
@@ -1062,7 +1073,7 @@ function earningsProximity(earningsDateStr, expirationStr, earningsInWindow) {
 
 // ─── SCREENER TAB ────────────────────────────────────────────────────────────
 
-function ScreenerTab({ minROC }) {
+function ScreenerTab({ minROC, collateralFloor, collateralCap, minPremium, hideEarnings }) {
   const [rows,           setRows]           = useState([]);
   const [loading,        setLoading]        = useState(false);
   const [lastScan,       setLastScan]       = useState(null);
@@ -1116,8 +1127,23 @@ function ScreenerTab({ minROC }) {
     setExpandedSymbol(prev => prev === symbol ? null : symbol);
   }
 
+  // Filters are applied here, client-side, so moving a slider doesn't need a
+  // rescan. None of them feed wheelScore — they only decide what's shown.
+  function passesFilters(r) {
+    if (r.error) return true;
+    const c = r.contract;
+    if (!c) return true;
+    if ((c.roc ?? 0) < minROC) return false;
+    const coll = c.collateralRequired ?? 0;
+    if (coll < collateralFloor || coll > collateralCap) return false;
+    if ((c.mid ?? 0) * 100 < minPremium) return false;
+    if (hideEarnings && c.earningsInWindow) return false;
+    return true;
+  }
+  const hiddenCount = rows.filter(r => !passesFilters(r)).length;
+
   const sorted = [...rows]
-    .filter(r => r.error || (r.contract?.roc ?? 0) >= minROC)
+    .filter(passesFilters)
     .sort((a, b) => {
       if (a.error && b.error) return 0;
       if (a.error) return 1;
@@ -1240,7 +1266,10 @@ function ScreenerTab({ minROC }) {
                         <td className="px-3 py-2 font-mono text-green-400">{c ? fmt.dollar(c.mid) : '—'}</td>
                         <td className="px-3 py-2 font-mono font-semibold text-indigo-300">{c ? fmt.pct2(c.roc) : '—'}</td>
                         <td className="px-3 py-2 font-mono text-indigo-200">{c ? fmt.pct1(c.rocAnnualized) : '—'}</td>
-                        <td className="px-3 py-2 font-mono font-bold text-center">
+                        <td className="px-3 py-2 font-mono font-bold text-center"
+                            title={row.scoreBreakdown
+                              ? Object.entries(row.scoreBreakdown).map(([k, v]) => `${SCORE_LABELS[k] ?? k}: ${v}`).join('\n')
+                              : undefined}>
                           {row.wheelScore != null ? (
                             <span className={
                               row.wheelScore >= 70 ? 'text-green-400' :
@@ -1290,7 +1319,7 @@ function ScreenerTab({ minROC }) {
             <div className="mt-3 text-xs text-gray-600">
               {sorted.filter(r => !r.error).length} symbols ·{' '}
               {sorted.filter(r => !r.error && r.contract).length} with contracts ·{' '}
-              {sorted.filter(r => !r.error && r.contract && !r.contract.exceedsCollateralCap).length} within cap
+              {hiddenCount} hidden by filters · hover a score to see what drove it
             </div>
           </>
         )}
@@ -1626,6 +1655,9 @@ function PositionsTab() {
 export default function App() {
   const [tab,          setTab]          = useState('screener');
   const [collateralCap,setCollateralCap]= useState(12000);
+  const [collateralFloor,setCollateralFloor] = useState(0);
+  const [minPremium,   setMinPremium]   = useState(0);
+  const [hideEarnings, setHideEarnings] = useState(true);
   const [minROC,       setMinROC]       = useState(1.5);
   const [dteLow,       setDteLow]       = useState(21);
   const [dteHigh,      setDteHigh]      = useState(35);
@@ -1634,6 +1666,9 @@ export default function App() {
   useEffect(() => {
     fetch(`${API}/config`).then(r => r.json()).then(cfg => {
       setCollateralCap(cfg.collateralCap ?? 12000);
+      setCollateralFloor(cfg.collateralFloor ?? 0);
+      setMinPremium(cfg.minPremium ?? 0);
+      setHideEarnings(cfg.hideEarningsInWindow ?? true);
       setMinROC(cfg.minROC ?? 1.5);
       setDteLow(cfg.dteLow ?? 21);
       setDteHigh(cfg.dteHigh ?? 35);
@@ -1661,16 +1696,43 @@ export default function App() {
             <span className="text-xs text-gray-500">CSP Screener</span>
           </div>
 
-          {/* collateral cap */}
+          {/* collateral floor — filter only, not scored */}
+          <div className="flex flex-col gap-1 min-w-[160px]">
+            <label className="text-xs text-gray-400">
+              Collateral Floor <span className="ml-1 font-mono text-indigo-300">${collateralFloor.toLocaleString()}</span>
+            </label>
+            <input type="range" min={0} max={10000} step={250} value={collateralFloor}
+              onChange={e => { const v = Math.min(Number(e.target.value), collateralCap); setCollateralFloor(v); saveConfig({ collateralFloor: v }).catch(() => {}); }}
+              className="w-full accent-indigo-500 h-1.5" />
+            <div className="flex justify-between text-[10px] text-gray-600"><span>$0</span><span>$10k</span></div>
+          </div>
+
+          {/* collateral cap — filter only, not scored */}
           <div className="flex flex-col gap-1 min-w-[180px]">
             <label className="text-xs text-gray-400">
               Collateral Cap <span className="ml-1 font-mono text-indigo-300">${collateralCap.toLocaleString()}</span>
             </label>
-            <input type="range" min={5000} max={25000} step={500} value={collateralCap}
-              onChange={e => { const v = Number(e.target.value); setCollateralCap(v); saveConfig({ collateralCap: v }).catch(() => {}); }}
+            <input type="range" min={2000} max={60000} step={500} value={collateralCap}
+              onChange={e => { const v = Math.max(Number(e.target.value), collateralFloor); setCollateralCap(v); saveConfig({ collateralCap: v }).catch(() => {}); }}
               className="w-full accent-indigo-500 h-1.5" />
-            <div className="flex justify-between text-[10px] text-gray-600"><span>$5k</span><span>$25k</span></div>
+            <div className="flex justify-between text-[10px] text-gray-600"><span>$2k</span><span>$60k</span></div>
           </div>
+
+          {/* min premium per contract */}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-400">Min Premium $</label>
+            <input type="number" min={0} max={2000} step={5} value={minPremium}
+              onChange={e => { const v = parseFloat(e.target.value) || 0; setMinPremium(v); saveConfig({ minPremium: v }).catch(() => {}); }}
+              className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-indigo-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 text-right" />
+          </div>
+
+          {/* hide earnings-in-window */}
+          <label className="flex items-center gap-1.5 text-xs text-gray-400 pb-1.5 cursor-pointer">
+            <input type="checkbox" checked={hideEarnings}
+              onChange={e => { const v = e.target.checked; setHideEarnings(v); saveConfig({ hideEarningsInWindow: v }).catch(() => {}); }}
+              className="accent-indigo-500" />
+            Hide earnings in window
+          </label>
 
           {/* min ROC */}
           <div className="flex flex-col gap-1">
@@ -1719,7 +1781,9 @@ export default function App() {
       </div>
 
       {/* ── TAB CONTENT ── */}
-      {tab === 'screener'   && <ScreenerTab minROC={minROC} />}
+      {tab === 'screener'   && <ScreenerTab minROC={minROC} collateralFloor={collateralFloor}
+                                 collateralCap={collateralCap} minPremium={minPremium}
+                                 hideEarnings={hideEarnings} />}
       {tab === 'positions'  && <PositionsTab />}
     </div>
   );

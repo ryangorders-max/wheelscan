@@ -1014,143 +1014,137 @@ def earnings_warnings(open_positions: list[dict]) -> list[dict]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# IV history (for a real IV percentile)
+# ---------------------------------------------------------------------------
+# Neither Schwab's chain endpoint nor yfinance exposes historical IV, so we
+# record one iv30 reading per symbol per day on every scan and compute the
+# percentile from our own history. Until a symbol has IV_MIN_SAMPLES days of
+# history the percentile is None and scores neutral — never faked.
+
+IV_MIN_SAMPLES = 20
+IV_HISTORY_DAYS = 400
+
+
+def record_iv_history(results: list[dict], path) -> None:
+    """Append today's iv30 for each symbol to a JSON file; keep ~13 months."""
+    import json
+    from pathlib import Path
+    path = Path(path)
+    try:
+        hist = json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        hist = {}
+    today = date.today().isoformat()
+    for r in results:
+        iv = r.get("iv30")
+        if r.get("error") or not iv:
+            continue
+        sym = hist.setdefault(r["symbol"], {})
+        sym[today] = iv
+        if len(sym) > IV_HISTORY_DAYS:
+            for d in sorted(sym)[: len(sym) - IV_HISTORY_DAYS]:
+                del sym[d]
+    try:
+        path.write_text(json.dumps(hist))
+    except Exception:
+        pass
+    for r in results:
+        r["ivPercentile"], r["ivHistoryDays"] = _iv_percentile(r, hist)
+
+
+def _iv_percentile(r: dict, hist: dict) -> tuple[Optional[float], int]:
+    series = list((hist.get(r.get("symbol")) or {}).values())
+    iv = r.get("iv30")
+    if not iv or len(series) < IV_MIN_SAMPLES:
+        return None, len(series)
+    below = sum(1 for v in series if v < iv)
+    return round(100.0 * below / len(series), 1), len(series)
+
+
+def _ramp(val: float, lo: float, hi: float) -> float:
+    """0 at or below lo, 1 at or above hi, linear between."""
+    if hi == lo:
+        return 1.0 if val >= hi else 0.0
+    return max(0.0, min(1.0, (val - lo) / (hi - lo)))
+
+
 def score_results(results: list[dict]) -> list[dict]:
     """
-    Compute wheelScore (0-100) for each result using cross-watchlist normalisation.
-    Must be called AFTER scan_watchlist so all symbols' data is available.
+    Compute wheelScore (0-100) for each result against FIXED thresholds, so a
+    ticker's score doesn't move when other tickers are added or removed.
 
     Components (weights sum to 100)
     --------------------------------
-    IV Score             20 pts  – iv30 normalised across watchlist
-    Seller's Edge        15 pts  – (iv30 - hv30) > 0 signals rich premium
-    ROC Score            20 pts  – contract ROC normalised across watchlist
-    Liquidity            10 pts  – contract openInterest normalised across watchlist
-    Earnings Safety      10 pts  – how far earnings are from expiration
-    IV Rank (proxy)      10 pts  – price position in 52-wk range (inverted)
-    Trend / Momentum      8 pts  – price vs 20-day SMA
-    Distance from 52w Low 4 pts  – % cushion above 52-week low
-    Bid-Ask Quality       3 pts  – tighter spread = better fill quality
+    Premium (ROC, 30-day equivalent)  15  – 0 at <=1.0%, full at >=3.5%
+    Seller's Edge (IV30 - HV30)       10  – 0 at <=0pp, full at >=15pp
+    IV Percentile (own history)       10  – neutral 5 until 20 days recorded
+    Earnings Safety                   20  – 0 if earnings before expiry
+    Liquidity (open interest)         15  – log scale, 0 at <=100, full at >=5000
+    Bid-Ask Quality                   10  – full at <=5% of mid, 0 at >=20%
+    Trend (price vs 20-day SMA)       20  – 0 at <=-8%, full at >=+2%
+
+    Collateral is deliberately NOT scored; it's a filter in the UI.
+    Each row gets a scoreBreakdown dict so the UI can show what drove it.
     """
-    valid = [r for r in results if not r.get("error") and r.get("contract")]
-
-    if not valid:
-        for r in results:
-            r["wheelScore"] = None
-        return results
-
-    def norm(val, pool: list) -> float:
-        """Linear normalise val into [0, 1] over the observed pool."""
-        if not pool or len(pool) < 2:
-            return 0.5
-        lo, hi = min(pool), max(pool)
-        if hi == lo:
-            return 0.5
-        return max(0.0, min(1.0, (val - lo) / (hi - lo)))
-
-    # ── collect pools for cross-watchlist normalisation ──────────────────────
-    iv30s      = [r["iv30"]  for r in valid if r.get("iv30")]
-    rocs       = [r["contract"]["roc"] for r in valid if r["contract"].get("roc")]
-    ois        = [r["contract"]["openInterest"] for r in valid
-                  if r["contract"].get("openInterest")]
-
-    # pct_from_low: (price - 52wLow) / 52wLow
-    pct_lows = []
-    for r in valid:
-        p, lo = r.get("price"), r.get("week52Low")
-        if p and lo and lo > 0:
-            pct_lows.append((p - lo) / lo)
-
-    # bid-ask spread %: (ask - bid) / mid  — lower is better, so we invert
-    spreads = []
-    for r in valid:
-        c = r["contract"]
-        bid, ask, mid = c.get("bid", 0), c.get("ask", 0), c.get("mid") or 0
-        if mid > 0 and not c.get("staleQuote"):
-            spreads.append((ask - bid) / mid)
-
-    # ── score each result ────────────────────────────────────────────────────
     for r in results:
-        if r.get("error") or not r.get("contract"):
+        c = r.get("contract")
+        if r.get("error") or not c:
             r["wheelScore"] = None
+            r["scoreBreakdown"] = None
             continue
 
-        c     = r["contract"]
         price = r.get("price") or 0.0
-        iv    = r.get("iv30")  or 0.0
-        hv    = r.get("hv30")  or 0.0
+        iv = r.get("iv30") or 0.0
+        hv = r.get("hv30") or 0.0
+        dte = c.get("dte") or 0
 
-        # 1. IV Score (20 pts)
-        iv_score = norm(iv, iv30s) * 20
-
-        # 2. Seller's Edge (15 pts) — IV premium over realised vol
-        edge = iv - hv          # percent-point units, e.g. 85.0 - 72.0 = 13.0
-        edge_score = (min(1.0, edge / 20.0) * 15) if edge > 0 else 0.0
-
-        # 3. ROC Score (20 pts)
+        # 1. Premium — normalise ROC to a 30-day equivalent so DTE doesn't skew it
         roc = c.get("roc") or 0.0
-        roc_score = norm(roc, rocs) * 20
+        roc30 = roc * 30 / dte if dte else roc
+        premium = _ramp(roc30, 1.0, 3.5) * 15
 
-        # 4. Liquidity (10 pts)
+        # 2. Seller's edge — only when both readings exist
+        edge = _ramp(iv - hv, 0.0, 15.0) * 10 if (iv and hv) else 5.0
+
+        # 3. IV percentile — real, from recorded history; neutral until enough
+        ivp = r.get("ivPercentile")
+        iv_pct = (ivp / 100.0) * 10 if ivp is not None else 5.0
+
+        # 4. Earnings — unknown date is NOT treated as safe
+        ed = r.get("earningsDate")
+        if c.get("earningsInWindow"):
+            earn = 0.0
+        elif not ed:
+            earn = 10.0
+        else:
+            exp = _to_date(c.get("expiration"))
+            gap = (date.fromisoformat(ed) - exp).days if exp else 99
+            earn = 12.0 if 0 <= gap <= 14 else 20.0  # earnings soon after expiry: roll risk
+
+        # 5. Liquidity — absolute OI on a log scale
         oi = c.get("openInterest") or 0
-        oi_score = norm(oi, ois) * 10
+        liq = _ramp(math.log10(oi), 2.0, math.log10(5000)) * 15 if oi > 0 else 0.0
 
-        # 5. Earnings Safety (10 pts)
-        earnings_date_str  = r.get("earningsDate")
-        earnings_in_window = c.get("earningsInWindow", False)
-        if earnings_in_window:
-            earn_score = 0.0
-        elif not earnings_date_str:
-            earn_score = 10.0           # no known earnings — safest
-        else:
-            days_away = (date.fromisoformat(earnings_date_str) - date.today()).days
-            if days_away > 45:
-                earn_score = 10.0
-            elif days_away >= 30:
-                earn_score = 5.0
-            else:
-                earn_score = 0.0
-
-        # 6. IV Rank proxy (10 pts)
-        # High price in its 52-wk range → likely low IV rank for these names
-        w52hi = r.get("week52High")
-        w52lo = r.get("week52Low")
-        if w52hi and w52lo and w52hi > w52lo and price:
-            price_pos = (price - w52lo) / (w52hi - w52lo)  # 0=at 52wLow, 1=at 52wHigh
-            iv_rank_proxy = 1.0 - price_pos                  # invert
-        else:
-            iv_rank_proxy = 0.5
-        iv_rank_score = max(0.0, min(1.0, iv_rank_proxy)) * 10
-
-        # 7. Trend / Momentum (8 pts)
-        sma20 = r.get("sma20")
-        if sma20 and price and sma20 > 0:
-            pct_above = (price - sma20) / sma20   # e.g. 0.03 = 3% above
-            trend_score = min(1.0, max(0.0, pct_above / 0.05)) * 8
-            # full 8 pts at 5% above SMA; 0 pts at or below SMA
-        else:
-            trend_score = 4.0   # neutral if data unavailable
-
-        # 8. Distance from 52-week Low (4 pts)
-        if w52lo and w52lo > 0 and price:
-            pct_from_low = (price - w52lo) / w52lo
-            low_score = norm(pct_from_low, pct_lows) * 4
-        else:
-            low_score = 2.0     # neutral
-
-        # 9. Bid-Ask Spread Quality (3 pts)
+        # 6. Bid-ask quality
         bid, ask, mid = c.get("bid", 0), c.get("ask", 0), c.get("mid") or 0
-        if mid > 0 and spreads and not c.get("staleQuote"):
-            spread_pct = (ask - bid) / mid
-            # invert: tighter spread (lower value) → higher score
-            spread_score = norm(-spread_pct, [-s for s in spreads]) * 3
-            # cap at 20% spread = 0 pts
-            if spread_pct >= 0.20:
-                spread_score = 0.0
+        if mid > 0 and not c.get("staleQuote") and ask >= bid > 0:
+            spread = (1.0 - _ramp((ask - bid) / mid, 0.05, 0.20)) * 10
         else:
-            spread_score = 1.5  # neutral
+            spread = 5.0
 
-        total = (iv_score + edge_score + roc_score + oi_score + earn_score
-                 + iv_rank_score + trend_score + low_score + spread_score)
-        r["wheelScore"] = round(total, 1)
+        # 7. Trend — don't sell puts into a falling stock
+        sma20 = r.get("sma20")
+        if sma20 and price:
+            trend = _ramp((price - sma20) / sma20, -0.08, 0.02) * 20
+        else:
+            trend = 10.0
+
+        parts = {
+            "premium": premium, "edge": edge, "ivPercentile": iv_pct,
+            "earnings": earn, "liquidity": liq, "spread": spread, "trend": trend,
+        }
+        r["scoreBreakdown"] = {k: round(v, 1) for k, v in parts.items()}
+        r["wheelScore"] = round(sum(parts.values()), 1)
 
     return results

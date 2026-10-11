@@ -1,5 +1,8 @@
 {
   "collateralCap": 12000,
+  "collateralFloor": 0,
+  "minPremium": 0,
+  "hideEarningsInWindow": true,
   "minROC": 1.5,
   "targetROC": 2.5,
   "targetDelta": 0.20,
