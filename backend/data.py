@@ -601,9 +601,11 @@ def _fetch_covered_call(
         pool = with_delta if with_delta else contracts
         best = min(
             pool,
-            # liquid contracts first: a thin strike's "mid" is rarely fillable,
-            # so a liquid 0.18-delta beats an illiquid 0.20-delta
+            # Stay near the target delta first (within +/-0.08), then prefer
+            # liquid strikes inside that band: a liquid 0.18 beats an illiquid
+            # 0.20, but a liquid 0.40 never beats an illiquid 0.20.
             key=lambda c: (
+                abs((c["delta"] or target_delta) - target_delta) > 0.08,
                 oi_pen(c),
                 abs((c["delta"] or target_delta) - target_delta),
                 dte_dist(c),
@@ -614,7 +616,9 @@ def _fetch_covered_call(
     # Richest call that breaks even or better if assigned: strike + premium >=
     # cost basis (e.g. an $80 call at $1.15 against an $81.15 basis), so an
     # underwater position can see what "no loss if called" actually pays.
-    def _breakeven_ok(c): return c["strike"] + c["mid"] >= cost_basis
+    # out-of-the-money only: an ITM call "breaks even" on paper but is just
+    # selling the shares now
+    def _breakeven_ok(c): return c["strike"] + c["mid"] >= cost_basis and (not price or c["strike"] >= price)
     at_basis = [c for c in contracts if _breakeven_ok(c) and not c["lowOpenInterest"]] \
         or [c for c in contracts if _breakeven_ok(c)]
     best_at_basis = max(at_basis, key=lambda c: (c["roc"] or 0)) if at_basis else None
