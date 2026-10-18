@@ -609,7 +609,13 @@ def _fetch_covered_call(
             ),
         )
 
-    return {**stock, "contract": best, "candidateCount": len(contracts), "error": False, "dataSource": data_source, "schwabError": schwab_error}
+    # Richest call that still sells at or above cost basis (any delta), so an
+    # underwater position can see what "no loss if called" actually pays.
+    at_basis = [c for c in contracts if not c["belowCostBasis"] and not c["lowOpenInterest"]] \
+        or [c for c in contracts if not c["belowCostBasis"]]
+    best_at_basis = max(at_basis, key=lambda c: (c["roc"] or 0)) if at_basis else None
+
+    return {**stock, "contract": best, "bestAtBasis": best_at_basis, "candidateCount": len(contracts), "error": False, "dataSource": data_source, "schwabError": schwab_error}
 
 
 def get_covered_call(
@@ -629,6 +635,29 @@ def get_covered_call(
             return {"symbol": symbol, "price": None, "contract": None, "error": "timeout"}
         except Exception as e:
             return {"symbol": symbol, "price": None, "contract": None, "error": str(e)}
+
+
+def scan_covered_calls(positions: list[dict], config: dict, max_workers: int = 4) -> list[dict]:
+    """
+    Covered-call board: every position with a cost basis and >=100 shares.
+    Each row carries the target-delta call (any strike) and bestAtBasis.
+    """
+    held = [p for p in positions if p.get("costBasis") and (p.get("shares") or 0) >= 100]
+    out: list[dict] = [None] * len(held)  # type: ignore
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {
+            ex.submit(_fetch_covered_call, p["symbol"], float(p["costBasis"]), int(p["shares"]), config, True): i
+            for i, p in enumerate(held)
+        }
+        for f, i in futs.items():
+            sym = held[i]["symbol"]
+            try:
+                out[i] = f.result(timeout=SYMBOL_TIMEOUT * 2)
+            except FuturesTimeout:
+                out[i] = {"symbol": sym, "contract": None, "error": "timeout"}
+            except Exception as e:
+                out[i] = {"symbol": sym, "contract": None, "error": str(e)}
+    return out
 
 
 # ---------------------------------------------------------------------------

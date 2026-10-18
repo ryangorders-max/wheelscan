@@ -1360,6 +1360,102 @@ function normaliseItem(item) {
   return { entryCondition: 'Any', notes: '', costBasis: null, shares: null, ...item };
 }
 
+// ─── COVERED-CALL BOARD ──────────────────────────────────────────────────────
+// One scan across every position with a cost basis + shares. For each lot:
+// the target-delta call (any strike, with the $ locked in if called) next to
+// the richest call at or above basis — so an underwater lot shows the real
+// trade-off between premium now and a loss if assigned.
+function CoveredCallBoard({ positionCount }) {
+  const [rows, setRows]       = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr]         = useState('');
+
+  async function run() {
+    setLoading(true); setErr('');
+    try {
+      const data = await fetch(`${API}/covered-calls`).then(r => r.json());
+      setRows(Array.isArray(data) ? data : []);
+    } catch (e) { setErr(e.message); }
+    finally { setLoading(false); }
+  }
+
+  function CallCell({ c, basis, showCalled }) {
+    if (!c) return <span className="text-gray-600">none in DTE range</span>;
+    const calledPnl = (c.strike - basis + c.mid) * 100;
+    return (
+      <div className="leading-5">
+        <div className="font-mono text-gray-100">
+          ${c.strike} <span className="text-gray-500">{formatExp(c.expiration)} · {c.dte}d</span>
+          {c.earningsInWindow && <span className="ml-1 text-yellow-400" title="Earnings before expiry">⚠</span>}
+        </div>
+        <div className="font-mono text-xs">
+          <span className="text-green-400">{fmt.dollar(c.mid)}</span>
+          <span className="text-gray-500"> · </span>
+          <span className="text-indigo-300">{fmt.pct2(c.roc)}</span>
+          {c.delta != null && <span className="text-gray-500"> · Δ{Math.abs(c.delta).toFixed(2)}</span>}
+          {c.lowOpenInterest && <span className="ml-1 text-orange-400" title="Open interest below your minimum">low OI</span>}
+        </div>
+        {showCalled && (
+          <div className={`font-mono text-xs ${calledPnl < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+            if called: {calledPnl < 0 ? '−' : '+'}${Math.abs(calledPnl).toFixed(0)}/lot
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-6 bg-gray-900 border border-gray-700 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-200">Covered-call board</h3>
+          <p className="text-xs text-gray-500">{positionCount} position{positionCount === 1 ? '' : 's'} with cost basis + shares. ROC is on cost basis.</p>
+        </div>
+        <button onClick={run} disabled={loading || positionCount === 0}
+          className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-semibold rounded-lg">
+          {loading ? 'Scanning…' : rows ? '↻ Rescan' : 'Scan covered calls'}
+        </button>
+      </div>
+      {err && <p className="text-red-400 text-xs">{err}</p>}
+      {rows && rows.length === 0 && <p className="text-gray-500 text-sm">No positions have both a cost basis and 100+ shares yet.</p>}
+      {rows && rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500 text-left border-b border-gray-700">
+                <th className="py-2 pr-3">Symbol</th>
+                <th className="py-2 pr-3">Price / basis</th>
+                <th className="py-2 pr-3">Target-delta call</th>
+                <th className="py-2">Best at/above basis</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.symbol} className="border-b border-gray-800 align-top">
+                  <td className="py-2 pr-3 font-bold text-white">{r.symbol}
+                    <div className="text-xs font-normal text-gray-500">{r.shares ?? ''}{r.shares ? ' sh' : ''}</div>
+                  </td>
+                  {r.error ? (
+                    <td colSpan={3} className="py-2 text-red-400 text-xs">{String(r.error)}</td>
+                  ) : (<>
+                    <td className="py-2 pr-3 font-mono">
+                      <div className="text-gray-100">{fmt.dollar(r.price)}</div>
+                      <div className="text-xs text-gray-500">basis {fmt.dollar(r.costBasis)}</div>
+                      <div className={`text-xs ${r.unrealizedPnlPct < 0 ? 'text-red-400' : 'text-green-400'}`}>{fmt.pct1(r.unrealizedPnlPct)}</div>
+                    </td>
+                    <td className="py-2 pr-3"><CallCell c={r.contract} basis={r.costBasis} showCalled /></td>
+                    <td className="py-2"><CallCell c={r.bestAtBasis} basis={r.costBasis} /></td>
+                  </>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PositionsTab() {
   const [watchlist,       setWatchlist]       = useState([]);  // [{symbol, entryCondition, notes, costBasis, shares}]
   const [input,           setInput]           = useState('');
@@ -1456,10 +1552,12 @@ function PositionsTab() {
   }
 
   return (
-    <div className={`flex-1 overflow-auto px-6 py-6 ${ccCouncilSym ? 'max-w-6xl' : 'max-w-2xl'}`}>
+    <div className={`flex-1 overflow-auto px-6 py-6 ${ccCouncilSym ? 'max-w-6xl' : 'max-w-4xl'}`}>
       <h2 className="text-sm font-semibold text-gray-300 mb-1">Positions</h2>
       <p className="text-xs text-gray-600 mb-1">Changes save immediately. The Screener uses this list on next scan. Add a cost basis and share count to run a covered-call scan.</p>
       <p className="text-xs text-gray-700 mb-5">Positions persist across redeploys as long as a Railway volume is attached to this service. Without one, edits still live in the running container and reset to <code className="text-gray-600">config.default.json</code> on the next deploy.</p>
+
+      <CoveredCallBoard positionCount={watchlist.filter(w => w.costBasis && (w.shares ?? 0) >= 100).length} />
 
       {/* ── add input ── */}
       <div className="flex gap-2 mb-2">

@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from fastapi.responses import StreamingResponse
 
-from data import scan_watchlist, get_stock_info, get_heatmap, score_results, record_iv_history, earnings_warnings, get_covered_call, get_covered_call_heatmap
+from data import scan_watchlist, get_stock_info, get_heatmap, score_results, record_iv_history, earnings_warnings, get_covered_call, get_covered_call_heatmap, scan_covered_calls
 import council
 
 BASE_DIR           = Path(__file__).parent
@@ -169,6 +169,13 @@ def covered_call(symbol: str, req: CoveredCallRequest):
         cfg,
         allow_below_basis=req.allowBelowBasis,
     )
+
+
+@app.get("/covered-calls")
+def covered_calls_board():
+    """Covered-call board for every position with a cost basis and shares."""
+    cfg = read_config()
+    return scan_covered_calls(cfg["watchlist"], cfg)
 
 
 @app.get("/heatmap/covered-call/{symbol}")
