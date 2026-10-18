@@ -1657,7 +1657,7 @@ export default function App() {
   const [collateralCap,setCollateralCap]= useState(12000);
   const [collateralFloor,setCollateralFloor] = useState(0);
   const [minPremium,   setMinPremium]   = useState(0);
-  const [hideEarnings, setHideEarnings] = useState(true);
+  const [hideEarnings, setHideEarnings] = useState(false);
   const [minROC,       setMinROC]       = useState(1.5);
   const [dteLow,       setDteLow]       = useState(21);
   const [dteHigh,      setDteHigh]      = useState(35);
@@ -1668,7 +1668,7 @@ export default function App() {
       setCollateralCap(cfg.collateralCap ?? 12000);
       setCollateralFloor(cfg.collateralFloor ?? 0);
       setMinPremium(cfg.minPremium ?? 0);
-      setHideEarnings(cfg.hideEarningsInWindow ?? true);
+      setHideEarnings(cfg.hideEarningsInWindow ?? false);
       setMinROC(cfg.minROC ?? 1.5);
       setDteLow(cfg.dteLow ?? 21);
       setDteHigh(cfg.dteHigh ?? 35);

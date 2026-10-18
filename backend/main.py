@@ -59,7 +59,7 @@ class Config(BaseModel):
     collateralCap: int
     collateralFloor: int = 0
     minPremium: float = 0          # $ per contract (mid x 100)
-    hideEarningsInWindow: bool = True
+    hideEarningsInWindow: bool = False
     minROC: float
     targetROC: float
     targetDelta: float
@@ -95,7 +95,7 @@ def read_config() -> dict:
     # fields added after the volume's config.json was first written
     data.setdefault("collateralFloor", 0)
     data.setdefault("minPremium", 0)
-    data.setdefault("hideEarningsInWindow", True)
+    data.setdefault("hideEarningsInWindow", False)
     data["watchlist"] = _normalize_watchlist(data.get("watchlist", []))
     return data
 

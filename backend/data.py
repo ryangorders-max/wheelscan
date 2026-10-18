@@ -1079,7 +1079,7 @@ def score_results(results: list[dict]) -> list[dict]:
     Premium (ROC, 30-day equivalent)  15  – 0 at <=1.0%, full at >=3.5%
     Seller's Edge (IV30 - HV30)       10  – 0 at <=0pp, full at >=15pp
     IV Percentile (own history)       10  – neutral 5 until 20 days recorded
-    Earnings Safety                   20  – 0 if earnings before expiry
+    Earnings Safety                   20  – 8 if earnings before expiry (penalised, not hidden)
     Liquidity (open interest)         15  – log scale, 0 at <=100, full at >=5000
     Bid-Ask Quality                   10  – full at <=5% of mid, 0 at >=20%
     Trend (price vs 20-day SMA)       20  – 0 at <=-8%, full at >=+2%
@@ -1114,7 +1114,7 @@ def score_results(results: list[dict]) -> list[dict]:
         # 4. Earnings — unknown date is NOT treated as safe
         ed = r.get("earningsDate")
         if c.get("earningsInWindow"):
-            earn = 0.0
+            earn = 8.0  # sellable into earnings, but the premium prices the gap
         elif not ed:
             earn = 10.0
         else:
