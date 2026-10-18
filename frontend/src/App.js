@@ -1044,6 +1044,40 @@ const SCORE_LABELS = {
   trend:        'Trend /20',
 };
 
+// Score with a hover breakdown. A custom popup (not the native title
+// tooltip) so the text is readable; position:fixed so the scrolling table
+// can't clip it on the bottom rows.
+function ScoreCell({ score, breakdown }) {
+  const [pos, setPos] = useState(null);
+  if (score == null) return '—';
+  const cls = score >= 70 ? 'text-green-400' : score >= 50 ? 'text-yellow-400' : 'text-red-400';
+  function show(e) {
+    if (!breakdown) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const below = r.bottom + 240 < window.innerHeight;
+    setPos({ left: r.left + r.width / 2, top: below ? r.bottom + 6 : r.top - 6, below });
+  }
+  return (
+    <span className={`${cls} cursor-help`} onMouseEnter={show} onMouseLeave={() => setPos(null)}>
+      {score}
+      {pos && (
+        <div className="fixed z-50 pointer-events-none bg-gray-900 border border-gray-600 rounded-lg shadow-xl px-4 py-3 text-base font-normal text-gray-200 text-left whitespace-nowrap"
+             style={{ left: pos.left, top: pos.top, transform: `translate(-50%, ${pos.below ? '0' : '-100%'})` }}>
+          {Object.entries(breakdown).map(([k, v]) => (
+            <div key={k} className="flex justify-between gap-6 leading-7">
+              <span className="text-gray-400">{SCORE_LABELS[k] ?? k}</span>
+              <span className="font-mono text-gray-100">{v}</span>
+            </div>
+          ))}
+          <div className="flex justify-between gap-6 leading-7 mt-1 pt-1 border-t border-gray-700 font-semibold">
+            <span>Total</span><span className={`font-mono ${cls}`}>{score}</span>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 // ─── Earnings proximity helper ───────────────────────────────────────────────
 // Returns { icon, colorCls, title } describing how close earnings are to expiry.
 function earningsProximity(earningsDateStr, expirationStr, earningsInWindow) {
@@ -1266,19 +1300,8 @@ function ScreenerTab({ minROC, collateralFloor, collateralCap, minPremium, hideE
                         <td className="px-3 py-2 font-mono text-green-400">{c ? fmt.dollar(c.mid) : '—'}</td>
                         <td className="px-3 py-2 font-mono font-semibold text-indigo-300">{c ? fmt.pct2(c.roc) : '—'}</td>
                         <td className="px-3 py-2 font-mono text-indigo-200">{c ? fmt.pct1(c.rocAnnualized) : '—'}</td>
-                        <td className="px-3 py-2 font-mono font-bold text-center"
-                            title={row.scoreBreakdown
-                              ? Object.entries(row.scoreBreakdown).map(([k, v]) => `${SCORE_LABELS[k] ?? k}: ${v}`).join('\n')
-                              : undefined}>
-                          {row.wheelScore != null ? (
-                            <span className={
-                              row.wheelScore >= 70 ? 'text-green-400' :
-                              row.wheelScore >= 50 ? 'text-yellow-400' :
-                              'text-red-400'
-                            }>
-                              {row.wheelScore}
-                            </span>
-                          ) : '—'}
+                        <td className="px-3 py-2 font-mono font-bold text-center">
+                          <ScoreCell score={row.wheelScore} breakdown={row.scoreBreakdown} />
                         </td>
                         <td className={`px-3 py-2 font-mono text-xs ${ep.colorCls}`} title={ep.title || undefined}>
                           {row.earningsDate ?? '—'}{ep.icon && <span className="ml-1">{ep.icon}</span>}
