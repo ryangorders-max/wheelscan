@@ -3,6 +3,8 @@
   "collateralFloor": 0,
   "minPremium": 0,
   "hideEarningsInWindow": false,
+  "ccDteLow": 7,
+  "ccDteHigh": 35,
   "minROC": 1.5,
   "targetROC": 2.5,
   "targetDelta": 0.20,

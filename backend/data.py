@@ -609,10 +609,12 @@ def _fetch_covered_call(
             ),
         )
 
-    # Richest call that still sells at or above cost basis (any delta), so an
+    # Richest call that breaks even or better if assigned: strike + premium >=
+    # cost basis (e.g. an $80 call at $1.15 against an $81.15 basis), so an
     # underwater position can see what "no loss if called" actually pays.
-    at_basis = [c for c in contracts if not c["belowCostBasis"] and not c["lowOpenInterest"]] \
-        or [c for c in contracts if not c["belowCostBasis"]]
+    def _breakeven_ok(c): return c["strike"] + c["mid"] >= cost_basis
+    at_basis = [c for c in contracts if _breakeven_ok(c) and not c["lowOpenInterest"]] \
+        or [c for c in contracts if _breakeven_ok(c)]
     best_at_basis = max(at_basis, key=lambda c: (c["roc"] or 0)) if at_basis else None
 
     return {**stock, "contract": best, "bestAtBasis": best_at_basis, "candidateCount": len(contracts), "error": False, "dataSource": data_source, "schwabError": schwab_error}
@@ -643,6 +645,11 @@ def scan_covered_calls(positions: list[dict], config: dict, max_workers: int = 4
     Each row carries the target-delta call (any strike) and bestAtBasis.
     """
     held = [p for p in positions if p.get("costBasis") and (p.get("shares") or 0) >= 100]
+    # The board has its own DTE window (default 7-35) so it can reach the
+    # short expiries that close before earnings; the CSP screener's stays put.
+    lo = int(config.get("ccDteLow", 7)); hi = int(config.get("ccDteHigh", 35))
+    config = {**config, "dteLow": lo, "dteHigh": hi,
+              "targetDTE": min(max(int(config.get("targetDTE", (lo + hi) // 2)), lo), hi)}
     out: list[dict] = [None] * len(held)  # type: ignore
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = {

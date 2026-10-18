@@ -1010,6 +1010,7 @@ const COLUMNS = [
   { col: 'mid',           label: 'Premium' },
   { col: 'roc',           label: 'ROC %' },
   { col: 'rocAnnualized', label: 'Ann ROC %' },
+  { col: 'cushion',       label: 'Cushion %' },
   { col: 'wheelScore',    label: 'Score' },
   { col: 'earnings',      label: 'Earnings' },
   { col: 'cap',           label: 'Cap' },
@@ -1029,11 +1030,20 @@ function getValue(row, col) {
     case 'mid':           return c?.mid;
     case 'roc':           return c?.roc;
     case 'rocAnnualized': return c?.rocAnnualized;
+    case 'cushion':       return cushionPct(row);
     case 'wheelScore':    return row.wheelScore;
     case 'earnings':      return row.earningsDate;
     case 'cap':           return c?.exceedsCollateralCap ? 1 : 0;
     default:              return null;
   }
+}
+
+// How far the stock can fall before the put loses money at expiry:
+// (price - (strike - premium)) / price.
+function cushionPct(row) {
+  const c = row.contract;
+  if (!c || !row.price || c.strike == null || c.mid == null) return null;
+  return (row.price - (c.strike - c.mid)) / row.price * 100;
 }
 
 // Labels + max points for the wheelScore breakdown tooltip (see score_results).
@@ -1259,7 +1269,7 @@ function ScreenerTab({ minROC, collateralFloor, collateralCap, minPremium, hideE
                       <tr className="border-b border-gray-900 bg-red-950/30 cursor-pointer"
                           onClick={() => handleRowClick(row.symbol)}>
                         <td className="px-3 py-2 font-mono font-bold text-red-400">{row.symbol}</td>
-                        <td colSpan={12} className="px-3 py-2 text-red-500 text-xs">{row.errorMessage || 'Error'}</td>
+                        <td colSpan={COLUMNS.length - 1} className="px-3 py-2 text-red-500 text-xs">{row.errorMessage || 'Error'}</td>
                       </tr>
                     </React.Fragment>
                   );
@@ -1303,6 +1313,10 @@ function ScreenerTab({ minROC, collateralFloor, collateralCap, minPremium, hideE
                         <td className="px-3 py-2 font-mono text-green-400">{c ? fmt.dollar(c.mid) : '—'}</td>
                         <td className="px-3 py-2 font-mono font-semibold text-indigo-300">{c ? fmt.pct2(c.roc) : '—'}</td>
                         <td className="px-3 py-2 font-mono text-indigo-200">{c ? fmt.pct1(c.rocAnnualized) : '—'}</td>
+                        <td className="px-3 py-2 font-mono text-gray-300"
+                            title={c ? `Breakeven ${fmt.dollar(c.strike - c.mid)} — stock can fall this far before the put loses money` : undefined}>
+                          {fmt.pct1(cushionPct(row))}
+                        </td>
                         <td className="px-3 py-2 font-mono font-bold text-center">
                           <ScoreCell score={row.wheelScore} breakdown={row.scoreBreakdown} />
                         </td>
@@ -1372,6 +1386,22 @@ function CoveredCallBoard({ positionCount }) {
   const [rows, setRows]       = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr]         = useState('');
+  const [dteLo, setDteLo]     = useState(7);
+  const [dteHi, setDteHi]     = useState(35);
+
+  useEffect(() => {
+    fetch(`${API}/config`).then(r => r.json()).then(cfg => {
+      setDteLo(cfg.ccDteLow ?? 7); setDteHi(cfg.ccDteHigh ?? 35);
+    }).catch(() => {});
+  }, []);
+
+  async function saveDte(lo, hi) {
+    const current = await fetch(`${API}/config`).then(r => r.json());
+    await fetch(`${API}/config`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...current, ccDteLow: lo, ccDteHigh: hi }),
+    });
+  }
 
   async function run() {
     setLoading(true); setErr('');
@@ -1400,7 +1430,7 @@ function CoveredCallBoard({ positionCount }) {
         </div>
         {showCalled && (
           <div className={`font-mono text-xs ${calledPnl < 0 ? 'text-red-400' : 'text-gray-400'}`}>
-            if called: {calledPnl < 0 ? '−' : '+'}${Math.abs(calledPnl).toFixed(0)}/lot
+            if called: {Math.abs(calledPnl) < 0.5 ? 'breakeven' : `${calledPnl < 0 ? '−' : '+'}$${Math.abs(calledPnl).toFixed(0)}/lot`}
           </div>
         )}
       </div>
@@ -1413,6 +1443,16 @@ function CoveredCallBoard({ positionCount }) {
         <div>
           <h3 className="text-sm font-semibold text-gray-200">Covered-call board</h3>
           <p className="text-xs text-gray-500">{positionCount} position{positionCount === 1 ? '' : 's'} with cost basis + shares. ROC is on cost basis.</p>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-gray-400 ml-auto mr-3">
+          DTE
+          <input type="number" min={1} max={90} value={dteLo}
+            onChange={e => { const v = Math.max(1, Math.min(Number(e.target.value) || 1, dteHi)); setDteLo(v); saveDte(v, dteHi).catch(() => {}); }}
+            className="w-14 bg-gray-800 border border-gray-700 rounded px-2 py-1 font-mono text-indigo-300 text-right" />
+          –
+          <input type="number" min={1} max={90} value={dteHi}
+            onChange={e => { const v = Math.max(dteLo, Math.min(Number(e.target.value) || dteLo, 90)); setDteHi(v); saveDte(dteLo, v).catch(() => {}); }}
+            className="w-14 bg-gray-800 border border-gray-700 rounded px-2 py-1 font-mono text-indigo-300 text-right" />
         </div>
         <button onClick={run} disabled={loading || positionCount === 0}
           className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-semibold rounded-lg">
@@ -1429,7 +1469,7 @@ function CoveredCallBoard({ positionCount }) {
                 <th className="py-2 pr-3">Symbol</th>
                 <th className="py-2 pr-3">Price / basis</th>
                 <th className="py-2 pr-3">Target-delta call</th>
-                <th className="py-2">Best at/above basis (underwater lots)</th>
+                <th className="py-2" title="Strike + premium ≥ cost basis, e.g. $80 call at $1.15 vs $81.15 basis">Best breakeven-or-better if called (underwater lots)</th>
               </tr>
             </thead>
             <tbody>
@@ -1450,7 +1490,7 @@ function CoveredCallBoard({ positionCount }) {
                     <td className="py-2">
                       {r.price != null && r.price >= r.costBasis
                         ? <span className="text-gray-600 text-xs">in profit — basis isn't the constraint</span>
-                        : <CallCell c={r.bestAtBasis} basis={r.costBasis} />}
+                        : <CallCell c={r.bestAtBasis} basis={r.costBasis} showCalled />}
                     </td>
                   </>)}
                 </tr>

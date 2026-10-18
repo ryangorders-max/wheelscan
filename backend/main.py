@@ -60,6 +60,8 @@ class Config(BaseModel):
     collateralFloor: int = 0
     minPremium: float = 0          # $ per contract (mid x 100)
     hideEarningsInWindow: bool = False
+    ccDteLow: int = 7              # covered-call board's own DTE window
+    ccDteHigh: int = 35
     minROC: float
     targetROC: float
     targetDelta: float
@@ -96,6 +98,8 @@ def read_config() -> dict:
     data.setdefault("collateralFloor", 0)
     data.setdefault("minPremium", 0)
     data.setdefault("hideEarningsInWindow", False)
+    data.setdefault("ccDteLow", 7)
+    data.setdefault("ccDteHigh", 35)
     data["watchlist"] = _normalize_watchlist(data.get("watchlist", []))
     return data
 
