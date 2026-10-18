@@ -601,9 +601,11 @@ def _fetch_covered_call(
         pool = with_delta if with_delta else contracts
         best = min(
             pool,
+            # liquid contracts first: a thin strike's "mid" is rarely fillable,
+            # so a liquid 0.18-delta beats an illiquid 0.20-delta
             key=lambda c: (
-                abs((c["delta"] or target_delta) - target_delta),
                 oi_pen(c),
+                abs((c["delta"] or target_delta) - target_delta),
                 dte_dist(c),
                 -(c["roc"] or 0),
             ),
