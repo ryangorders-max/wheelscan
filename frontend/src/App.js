@@ -1429,7 +1429,7 @@ function CoveredCallBoard({ positionCount }) {
                 <th className="py-2 pr-3">Symbol</th>
                 <th className="py-2 pr-3">Price / basis</th>
                 <th className="py-2 pr-3">Target-delta call</th>
-                <th className="py-2">Best at/above basis</th>
+                <th className="py-2">Best at/above basis (underwater lots)</th>
               </tr>
             </thead>
             <tbody>
@@ -1447,7 +1447,11 @@ function CoveredCallBoard({ positionCount }) {
                       <div className={`text-xs ${r.unrealizedPnlPct < 0 ? 'text-red-400' : 'text-green-400'}`}>{fmt.pct1(r.unrealizedPnlPct)}</div>
                     </td>
                     <td className="py-2 pr-3"><CallCell c={r.contract} basis={r.costBasis} showCalled /></td>
-                    <td className="py-2"><CallCell c={r.bestAtBasis} basis={r.costBasis} /></td>
+                    <td className="py-2">
+                      {r.price != null && r.price >= r.costBasis
+                        ? <span className="text-gray-600 text-xs">in profit — basis isn't the constraint</span>
+                        : <CallCell c={r.bestAtBasis} basis={r.costBasis} />}
+                    </td>
                   </>)}
                 </tr>
               ))}
