@@ -376,9 +376,12 @@ function HeatmapPanel({
   for (const c of contracts) lookup[`${c.strike}|${c.expiration}`] = c;
 
   // find the strike closest to current price for the ATM marker
-  const atmStrike = data.price != null
+  // only label it ATM if it's actually near the money (within 5%) — on a deep
+  // underwater covered-call view the closest shown strike can be 2x the price
+  const nearest = data.price != null && strikes.length
     ? strikes.reduce((best, s) => Math.abs(s - data.price) < Math.abs(best - data.price) ? s : best, strikes[0])
     : null;
+  const atmStrike = nearest != null && Math.abs(nearest - data.price) / data.price <= 0.05 ? nearest : null;
 
   const metricDef = metrics.find(m => m.key === metric) || metrics[0];
   const allVals   = contracts.map(c => c[metric]).filter(v => v != null && isFinite(v));
