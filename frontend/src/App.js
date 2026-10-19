@@ -1011,6 +1011,7 @@ const COLUMNS = [
   { col: 'roc',           label: 'ROC %' },
   { col: 'rocAnnualized', label: 'Ann ROC %' },
   { col: 'cushion',       label: 'Cushion %' },
+  { col: 'quality',       label: 'Quality' },
   { col: 'wheelScore',    label: 'Score' },
   { col: 'earnings',      label: 'Earnings' },
   { col: 'cap',           label: 'Cap' },
@@ -1031,6 +1032,7 @@ function getValue(row, col) {
     case 'roc':           return c?.roc;
     case 'rocAnnualized': return c?.rocAnnualized;
     case 'cushion':       return cushionPct(row);
+    case 'quality':       return row.quality?.grade ? 'EDCBA'.indexOf(row.quality.grade) : -1;
     case 'wheelScore':    return row.wheelScore;
     case 'earnings':      return row.earningsDate;
     case 'cap':           return c?.exceedsCollateralCap ? 1 : 0;
@@ -1044,6 +1046,21 @@ function cushionPct(row) {
   const c = row.contract;
   if (!c || !row.price || c.strike == null || c.mid == null) return null;
   return (row.price - (c.strike - c.mid)) / row.price * 100;
+}
+
+// Fundamental-quality grade (Alpha Vantage, cached weekly). Filter only — never scored.
+const QUALITY_CHECKS = {
+  profitable: 'Profitable (net margin > 0)',
+  cashGenerative: 'EBITDA positive',
+  growing: 'Revenue growth > 10% YoY',
+  established: 'Market cap > $2B',
+};
+function QualityBadge({ q }) {
+  if (!q) return <span className="text-gray-600 text-xs" title="Not fetched yet — appears on a later scan">…</span>;
+  if (!q.grade) return <span className="text-gray-600 text-xs" title="Fund/ETF — no company fundamentals">fund</span>;
+  const cls = { A: 'bg-green-900 text-green-300', B: 'bg-emerald-950 text-emerald-300', C: 'bg-yellow-950 text-yellow-300', D: 'bg-red-950 text-red-300' }[q.grade];
+  const tip = Object.entries(QUALITY_CHECKS).map(([k, label]) => `${q.checks?.[k] ? '✓' : '✗'} ${label}`).join('\n');
+  return <span className={`px-2 py-0.5 rounded font-mono font-bold text-xs cursor-help ${cls}`} title={tip}>{q.grade}</span>;
 }
 
 // Labels + max points for the wheelScore breakdown tooltip (see score_results).
@@ -1120,7 +1137,7 @@ function earningsProximity(earningsDateStr, expirationStr, earningsInWindow) {
 
 // ─── SCREENER TAB ────────────────────────────────────────────────────────────
 
-function ScreenerTab({ minROC, collateralFloor, collateralCap, minPremium, hideEarnings }) {
+function ScreenerTab({ minROC, collateralFloor, collateralCap, minPremium, hideEarnings, minQuality }) {
   const [rows,           setRows]           = useState([]);
   const [loading,        setLoading]        = useState(false);
   const [lastScan,       setLastScan]       = useState(null);
@@ -1185,6 +1202,8 @@ function ScreenerTab({ minROC, collateralFloor, collateralCap, minPremium, hideE
     if (coll < collateralFloor || coll > collateralCap) return false;
     if ((c.mid ?? 0) * 100 < minPremium) return false;
     if (hideEarnings && c.earningsInWindow) return false;
+    // unknown grade (not fetched yet, or a fund) is never hidden
+    if (minQuality && minQuality !== 'Any' && r.quality?.grade && r.quality.grade > minQuality) return false;
     return true;
   }
   const hiddenCount = rows.filter(r => !passesFilters(r)).length;
@@ -1317,6 +1336,7 @@ function ScreenerTab({ minROC, collateralFloor, collateralCap, minPremium, hideE
                             title={c ? `Breakeven ${fmt.dollar(c.strike - c.mid)} — stock can fall this far before the put loses money` : undefined}>
                           {fmt.pct1(cushionPct(row))}
                         </td>
+                        <td className="px-3 py-2 text-center"><QualityBadge q={row.quality} /></td>
                         <td className="px-3 py-2 font-mono font-bold text-center">
                           <ScoreCell score={row.wheelScore} breakdown={row.scoreBreakdown} />
                         </td>
@@ -1826,6 +1846,7 @@ export default function App() {
   const [collateralFloor,setCollateralFloor] = useState(0);
   const [minPremium,   setMinPremium]   = useState(0);
   const [hideEarnings, setHideEarnings] = useState(false);
+  const [minQuality,   setMinQuality]   = useState('Any');
   const [minROC,       setMinROC]       = useState(1.5);
   const [dteLow,       setDteLow]       = useState(21);
   const [dteHigh,      setDteHigh]      = useState(35);
@@ -1837,6 +1858,7 @@ export default function App() {
       setCollateralFloor(cfg.collateralFloor ?? 0);
       setMinPremium(cfg.minPremium ?? 0);
       setHideEarnings(cfg.hideEarningsInWindow ?? false);
+      setMinQuality(cfg.minQuality ?? 'Any');
       setMinROC(cfg.minROC ?? 1.5);
       setDteLow(cfg.dteLow ?? 21);
       setDteHigh(cfg.dteHigh ?? 35);
@@ -1902,6 +1924,16 @@ export default function App() {
             Hide earnings in window
           </label>
 
+          {/* min fundamental quality — filter only, not scored */}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-400">Min Quality</label>
+            <select value={minQuality}
+              onChange={e => { const v = e.target.value; setMinQuality(v); saveConfig({ minQuality: v }).catch(() => {}); }}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-indigo-300 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+              {['Any', 'C', 'B', 'A'].map(g => <option key={g} value={g}>{g === 'Any' ? 'Any' : `${g}+`}</option>)}
+            </select>
+          </div>
+
           {/* min ROC */}
           <div className="flex flex-col gap-1">
             <label className="text-xs text-gray-400">Min ROC %</label>
@@ -1951,7 +1983,7 @@ export default function App() {
       {/* ── TAB CONTENT ── */}
       {tab === 'screener'   && <ScreenerTab minROC={minROC} collateralFloor={collateralFloor}
                                  collateralCap={collateralCap} minPremium={minPremium}
-                                 hideEarnings={hideEarnings} />}
+                                 hideEarnings={hideEarnings} minQuality={minQuality} />}
       {tab === 'positions'  && <PositionsTab />}
     </div>
   );

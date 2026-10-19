@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from data import scan_watchlist, get_stock_info, get_heatmap, score_results, record_iv_history, earnings_warnings, get_covered_call, get_covered_call_heatmap, scan_covered_calls
 import council
+from quality import attach_quality
 
 BASE_DIR           = Path(__file__).parent
 # DATA_DIR points at a persistent Railway volume when RAILWAY_VOLUME_MOUNT_PATH
@@ -23,6 +24,7 @@ CONFIG_PATH        = DATA_DIR / "config.json"
 CONFIG_DEFAULT     = BASE_DIR / "config.default.json"
 POSITIONS_PATH     = BASE_DIR / "positions.json"  # read-only for earnings warnings
 IV_HISTORY_PATH    = DATA_DIR / "iv_history.json"  # daily iv30 per symbol, for IV percentile
+QUALITY_PATH       = DATA_DIR / "fundamentals_cache.json"  # Alpha Vantage OVERVIEW, 7-day cache
 
 
 def _bootstrap() -> None:
@@ -62,6 +64,7 @@ class Config(BaseModel):
     hideEarningsInWindow: bool = False
     ccDteLow: int = 7              # covered-call board's own DTE window
     ccDteHigh: int = 35
+    minQuality: str = "Any"        # Any | A | B | C — UI filter only, never scored
     minROC: float
     targetROC: float
     targetDelta: float
@@ -100,6 +103,7 @@ def read_config() -> dict:
     data.setdefault("hideEarningsInWindow", False)
     data.setdefault("ccDteLow", 7)
     data.setdefault("ccDteHigh", 35)
+    data.setdefault("minQuality", "Any")
     data["watchlist"] = _normalize_watchlist(data.get("watchlist", []))
     return data
 
@@ -127,6 +131,7 @@ def scan():
     cfg = read_config()
     results = scan_watchlist(_symbols(cfg), cfg)
     record_iv_history(results, IV_HISTORY_PATH)
+    attach_quality(results, QUALITY_PATH)
     return score_results(results)
 
 
