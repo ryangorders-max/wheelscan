@@ -3,7 +3,7 @@ Fundamental-quality grades from Alpha Vantage OVERVIEW, on the free tier.
 
 Fundamentals only change when a company reports, so each symbol is fetched
 at most once every CACHE_DAYS and the whole app spends at most DAILY_BUDGET
-calls a day (free tier is 25/day). Scans never wait on Alpha Vantage: they
+calls a day (free tier is 25/day, shared with the morning brief). Scans never wait on Alpha Vantage: they
 read the cache, and missing/stale symbols are refreshed in a background
 thread, so new grades appear on a later scan.
 
@@ -27,7 +27,7 @@ import httpx
 
 API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "")
 CACHE_DAYS = 7
-DAILY_BUDGET = 20
+DAILY_BUDGET = 15       # shared free key: morning brief uses up to 5/day
 SPACING_S = 1.5          # stay well under the free tier's burst limit
 
 _lock = threading.Lock()
