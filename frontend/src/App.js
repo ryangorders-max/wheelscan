@@ -1051,7 +1051,7 @@ function cushionPct(row) {
 // Fundamental-quality grade (Alpha Vantage, cached weekly). Filter only — never scored.
 const QUALITY_CHECKS = {
   profitable: 'Profitable (net margin > 0)',
-  cashGenerative: 'EBITDA positive',
+  cashGenerative: 'Operating profit (EBITDA / op. margin > 0)',
   growing: 'Revenue growth > 10% YoY',
   established: 'Market cap > $2B',
 };

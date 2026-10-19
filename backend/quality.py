@@ -1,5 +1,7 @@
 """
-Fundamental-quality grades from Alpha Vantage OVERVIEW, on the free tier.
+Fundamental-quality grades. Primary source: Schwab instruments (FUNDAMENTAL
+projection) via the oauth proxy — one batched call, no daily cap. Fallback:
+Alpha Vantage OVERVIEW on the free tier, for anything Schwab didn't return.
 
 Fundamentals only change when a company reports, so each symbol is fetched
 at most once every CACHE_DAYS and the whole app spends at most DAILY_BUDGET
@@ -78,6 +80,29 @@ def _grade(ov: dict) -> dict:
     }
 
 
+def _pct(v):
+    """Schwab reports margins/growth as percents (25.3 = 25.3%); normalise to fractions."""
+    f = _num(v)
+    return None if f is None else f / 100.0
+
+
+def _grade_schwab(f: dict) -> dict:
+    if (f.get("assetType") or "EQUITY") != "EQUITY":
+        return {"grade": None, "source": "schwab"}           # fund/ETF/etc.
+    mcap = _num(f.get("marketCap"))
+    if mcap is not None and 0 < mcap < 1e7:                   # reported in $M
+        mcap *= 1e6
+    g = _grade({
+        "ProfitMargin": _pct(f.get("netProfitMarginTTM", f.get("netMarginTTM"))),
+        # Schwab has no EBITDA; operating margin is the closest "cash-generative" proxy
+        "EBITDA": _num(f.get("operatingMarginTTM")),
+        "QuarterlyRevenueGrowthYOY": _pct(f.get("revChangeTTM", f.get("revChangeYear"))),
+        "MarketCapitalization": mcap,
+    })
+    g["source"] = "schwab"
+    return g
+
+
 def _fetch(symbol: str) -> dict | None:
     """One OVERVIEW call. Returns {} for funds/unknown, None on a rate-limit/error."""
     r = httpx.get(
@@ -104,6 +129,21 @@ def _refresh(symbols: list[str], path: Path) -> None:
     global _running
     try:
         cache = _load(path)
+        # 1) Schwab: one batched call, no cap
+        try:
+            import schwab_source
+            fund = schwab_source.get_fundamentals(symbols)
+        except Exception:
+            fund = {}
+        for sym, f in fund.items():
+            # a non-equity (fund/ETF) is final even with no fundamentals attached
+            if f and ((f.get("assetType") or "EQUITY") != "EQUITY" or any(k != "assetType" for k in f)):
+                cache[sym] = {"fetched": datetime.now().isoformat(), **_grade_schwab(f)}
+        _save(path, cache)
+        symbols = [s for s in symbols if _stale(cache.get(s))]
+        # 2) Alpha Vantage for whatever Schwab didn't cover
+        if not API_KEY:
+            return
         meta = cache.setdefault("_meta", {})
         today = date.today().isoformat()
         if meta.get("day") != today:
@@ -139,9 +179,10 @@ def attach_quality(results: list[dict], path) -> list[dict]:
     for r in results:
         e = cache.get(r.get("symbol"))
         r["quality"] = {k: v for k, v in e.items() if k != "fetched"} if e else None
-    if not API_KEY:
-        return results
-    todo = [r["symbol"] for r in results if r.get("symbol") and _stale(cache.get(r["symbol"]))]
+    # re-check anything stale, plus anything not yet graded from Schwab (one
+    # cheap batched call); Alpha Vantage is only spent on stale leftovers
+    todo = [r["symbol"] for r in results if r.get("symbol")
+            and (_stale(cache.get(r["symbol"])) or (cache.get(r["symbol"]) or {}).get("source") != "schwab")]
     with _lock:
         if todo and not _running:
             _running = True

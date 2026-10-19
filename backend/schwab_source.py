@@ -89,3 +89,13 @@ def get_put_chain(symbol: str) -> dict[str, pd.DataFrame]:
 
 def get_call_chain(symbol: str) -> dict[str, pd.DataFrame]:
     return _chain_by_expiration(symbol, "callExpDateMap")
+
+
+def get_fundamentals(symbols: list[str]) -> dict[str, dict]:
+    """{symbol: {assetType, netProfitMarginTTM, revChangeTTM, marketCap, ...}}
+    via the proxy's /fundamentals (Schwab instruments, FUNDAMENTAL projection).
+    No daily cap, unlike Alpha Vantage's free tier."""
+    out: dict[str, dict] = {}
+    for i in range(0, len(symbols), 50):
+        out.update(_get("/fundamentals", params={"symbols": ",".join(symbols[i:i + 50])}) or {})
+    return out
