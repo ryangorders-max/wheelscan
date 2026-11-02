@@ -7,6 +7,7 @@ from typing import Optional
 
 import yfinance as yf
 
+import earnings_av
 import schwab_source
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,14 @@ def _to_date(val) -> Optional[date]:
 
 
 def _parse_earnings(t: yf.Ticker) -> Optional[date]:
-    """Return the next future earnings date, or None if unknown / already passed."""
+    """Return the next future earnings date, or None if unknown / already passed.
+    Alpha Vantage's calendar (1 call/day for every symbol) first; yfinance fallback."""
+    try:
+        d = earnings_av.lookup(getattr(t, "ticker", ""))
+        if d:
+            return d
+    except Exception:
+        pass
     try:
         cal = t.calendar
         if cal is None:

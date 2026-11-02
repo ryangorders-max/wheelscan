@@ -29,7 +29,7 @@ import httpx
 
 API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "")
 CACHE_DAYS = 7
-DAILY_BUDGET = 22       # own free key (25/day), 3 spare for retries
+DAILY_BUDGET = 21       # own free key (25/day): 1 for earnings_av, 3 spare for retries
 SPACING_S = 1.5          # stay well under the free tier's burst limit
 
 _lock = threading.Lock()

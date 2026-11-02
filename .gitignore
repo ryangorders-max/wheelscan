@@ -21,3 +21,6 @@ frontend/build/
 
 # OS
 .DS_Store
+
+# Runtime caches (live on the Railway volume)
+backend/earnings_calendar.json
