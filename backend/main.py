@@ -11,6 +11,8 @@ from fastapi.responses import StreamingResponse
 from data import scan_watchlist, get_stock_info, get_heatmap, score_results, record_iv_history, earnings_warnings, get_covered_call, get_covered_call_heatmap, scan_covered_calls
 import council
 from quality import attach_quality
+from rolls import get_rolls
+import schwab_source
 
 BASE_DIR           = Path(__file__).parent
 # DATA_DIR points at a persistent Railway volume when RAILWAY_VOLUME_MOUNT_PATH
@@ -56,6 +58,20 @@ class WatchlistItem(BaseModel):
     shares:         Optional[int] = None
 
 
+class OpenOption(BaseModel):
+    # A short call or put you already have on — saved so the roll tool can
+    # cover Fidelity (or anything) that isn't in the Schwab account.
+    symbol:      str
+    putCall:     str                       # "PUT" | "CALL"
+    strike:      float
+    expiration:  str                       # YYYY-MM-DD
+    qty:         int = 1
+    openPremium: Optional[float] = None    # per share, what this contract sold for
+    creditSoFar: Optional[float] = None    # per share, whole chain incl. this sale
+    costBasis:   Optional[float] = None    # calls: share basis, for if-called P/L
+    broker:      str = ""
+
+
 class Config(BaseModel):
     # Collateral and premium are UI filters only — never part of wheelScore.
     collateralCap: int
@@ -65,6 +81,7 @@ class Config(BaseModel):
     ccDteLow: int = 7              # covered-call board's own DTE window
     ccDteHigh: int = 35
     minQuality: str = "Any"        # Any | A | B | C — UI filter only, never scored
+    openOptions: List[OpenOption] = []
     minROC: float
     targetROC: float
     targetDelta: float
@@ -104,6 +121,7 @@ def read_config() -> dict:
     data.setdefault("ccDteLow", 7)
     data.setdefault("ccDteHigh", 35)
     data.setdefault("minQuality", "Any")
+    data.setdefault("openOptions", [])
     data["watchlist"] = _normalize_watchlist(data.get("watchlist", []))
     return data
 
@@ -178,6 +196,38 @@ def covered_call(symbol: str, req: CoveredCallRequest):
         cfg,
         allow_below_basis=req.allowBelowBasis,
     )
+
+
+class RollRequest(BaseModel):
+    symbol:      str
+    putCall:     str
+    strike:      float
+    expiration:  str
+    qty:         int = 1
+    openPremium: Optional[float] = None
+    creditSoFar: Optional[float] = None
+    costBasis:   Optional[float] = None
+
+
+@app.post("/rolls")
+def rolls(req: RollRequest):
+    """Close-now vs every later-expiry roll for one short option."""
+    return get_rolls(
+        req.symbol, req.putCall, req.strike, req.expiration,
+        qty=req.qty, open_premium=req.openPremium,
+        credit_so_far=req.creditSoFar, cost_basis=req.costBasis,
+    )
+
+
+@app.get("/open-options")
+def open_options():
+    """Saved short options plus whatever is open in the Schwab account."""
+    cfg = read_config()
+    try:
+        schwab, err = schwab_source.get_option_positions(), None
+    except schwab_source.SchwabUnavailable as exc:
+        schwab, err = [], str(exc)
+    return {"saved": cfg.get("openOptions", []), "schwab": schwab, "schwabError": err}
 
 
 @app.get("/covered-calls")

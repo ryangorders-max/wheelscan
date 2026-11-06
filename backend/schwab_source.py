@@ -99,3 +99,50 @@ def get_fundamentals(symbols: list[str]) -> dict[str, dict]:
     for i in range(0, len(symbols), 50):
         out.update(_get("/fundamentals", params={"symbols": ",".join(symbols[i:i + 50])}) or {})
     return out
+
+
+def _parse_occ(sym: str) -> Optional[dict]:
+    """'HOOD  261120P00075000' -> {expiration: '2026-11-20', putCall: 'PUT', strike: 75.0}"""
+    s = (sym or "").replace(" ", "")
+    tail = s[-15:]
+    if len(s) < 16 or tail[6] not in "CP" or not tail[:6].isdigit() or not tail[7:].isdigit():
+        return None
+    return {
+        "expiration": f"20{tail[0:2]}-{tail[2:4]}-{tail[4:6]}",
+        "putCall": "PUT" if tail[6] == "P" else "CALL",
+        "strike": int(tail[7:]) / 1000.0,
+    }
+
+
+def get_option_positions() -> list[dict]:
+    """Open SHORT option positions in the linked Schwab account, via the proxy's
+    /positions. [{symbol, putCall, strike, expiration, qty, openPremium, broker}]"""
+    data = _get("/positions")
+    acct = data.get("securitiesAccount", data) if isinstance(data, dict) else {}
+    out = []
+    for p in acct.get("positions", []) or []:
+        inst = p.get("instrument") or {}
+        if inst.get("assetType") != "OPTION":
+            continue
+        short = _num(p.get("shortQuantity"))
+        if short <= 0:
+            continue
+        occ = _parse_occ(inst.get("symbol", ""))
+        if not occ:
+            continue
+        out.append({
+            "symbol": (inst.get("underlyingSymbol") or inst.get("symbol", "").split()[0]).upper(),
+            **occ,
+            "putCall": inst.get("putCall") or occ["putCall"],
+            "qty": int(short),
+            "openPremium": round(_num(p.get("averagePrice")), 2) or None,
+            "broker": "Schwab",
+        })
+    return out
+
+
+def _num(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0

@@ -1397,6 +1397,223 @@ function normaliseItem(item) {
   return { entryCondition: 'Any', notes: '', costBasis: null, shares: null, ...item };
 }
 
+// ─── ROLL COMPARE ────────────────────────────────────────────────────────────
+// Short calls/puts you already have on: Schwab ones load automatically, others
+// (Fidelity) are added by hand and saved in config.openOptions. For any of them,
+// "Compare rolls" shows close-now vs every later-expiry roll at the same or a
+// better strike, with net credit at mid and at natural (worst fill).
+const CLOSE_TARGET_PCT = 60;   // close-early rule: ~60% of max profit
+
+function optKey(o) { return `${o.symbol}|${o.putCall}|${Number(o.strike)}|${o.expiration}`; }
+
+function RollBoard() {
+  const [saved, setSaved]         = useState([]);
+  const [schwab, setSchwab]       = useState([]);
+  const [schwabErr, setSchwabErr] = useState('');
+  const [loading, setLoading]     = useState(true);
+  const [openKey, setOpenKey]     = useState(null);
+  const [results, setResults]     = useState({});
+  const [creditOnly, setCreditOnly] = useState(true);
+  const [sortBy, setSortBy]       = useState('expiry');
+  const [form, setForm]           = useState({ symbol: '', putCall: 'PUT', strike: '', expiration: '', qty: 1, openPremium: '' });
+
+  useEffect(() => {
+    fetch(`${API}/open-options`).then(r => r.json()).then(d => {
+      setSaved(d.saved || []); setSchwab(d.schwab || []); setSchwabErr(d.schwabError || '');
+    }).catch(e => setSchwabErr(e.message)).finally(() => setLoading(false));
+  }, []);
+
+  // saved entries override Schwab ones (they carry credit-so-far / basis)
+  const byKey = {};
+  for (const o of schwab) byKey[optKey(o)] = { ...o, fromSchwab: true };
+  for (const o of saved)  byKey[optKey(o)] = { ...(byKey[optKey(o)] || {}), ...o };
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = Object.values(byKey).filter(o => o.expiration >= today)
+    .sort((a, b) => a.expiration.localeCompare(b.expiration) || a.symbol.localeCompare(b.symbol));
+
+  async function persist(next) {
+    setSaved(next);
+    const current = await fetch(`${API}/config`).then(r => r.json());
+    await fetch(`${API}/config`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...current, openOptions: next }),
+    });
+  }
+
+  function upsert(o) {
+    const clean = { symbol: o.symbol, putCall: o.putCall, strike: Number(o.strike), expiration: o.expiration,
+      qty: Number(o.qty) || 1, openPremium: o.openPremium === '' || o.openPremium == null ? null : Number(o.openPremium),
+      creditSoFar: o.creditSoFar === '' || o.creditSoFar == null ? null : Number(o.creditSoFar),
+      costBasis: o.costBasis === '' || o.costBasis == null ? null : Number(o.costBasis), broker: o.broker || '' };
+    persist([...saved.filter(s => optKey(s) !== optKey(clean)), clean]).catch(() => {});
+  }
+
+  function removeSaved(o) { persist(saved.filter(s => optKey(s) !== optKey(o))).catch(() => {}); }
+
+  function addManual() {
+    const sym = form.symbol.trim().toUpperCase();
+    if (!sym || !form.strike || !form.expiration) return;
+    upsert({ ...form, symbol: sym, broker: 'Manual' });
+    setForm({ symbol: '', putCall: form.putCall, strike: '', expiration: '', qty: 1, openPremium: '' });
+  }
+
+  async function compare(o) {
+    const k = optKey(o);
+    if (openKey === k) { setOpenKey(null); return; }
+    setOpenKey(k);
+    setResults(prev => ({ ...prev, [k]: 'loading' }));
+    try {
+      const data = await fetch(`${API}/rolls`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: o.symbol, putCall: o.putCall, strike: Number(o.strike), expiration: o.expiration,
+          qty: Number(o.qty) || 1, openPremium: o.openPremium ?? null, creditSoFar: o.creditSoFar ?? null,
+          costBasis: o.costBasis ?? null }),
+      }).then(r => r.json());
+      setResults(prev => ({ ...prev, [k]: data }));
+    } catch (e) {
+      setResults(prev => ({ ...prev, [k]: { error: e.message } }));
+    }
+  }
+
+  const inp = 'bg-gray-800 border border-gray-700 rounded px-2 py-1 font-mono text-sm text-indigo-200 focus:outline-none focus:ring-1 focus:ring-indigo-500';
+
+  function RollResult({ r, o }) {
+    if (r === 'loading') return <p className="text-gray-500 text-sm py-3">Pulling the chain…</p>;
+    if (!r || r.error) return <p className="text-red-400 text-sm py-3">{String(r?.error || 'No data')}</p>;
+    const p = r.position, isPut = r.putCall === 'PUT';
+    const atTarget = p.pctOfMaxProfit != null && p.pctOfMaxProfit >= CLOSE_TARGET_PCT;
+    let cands = r.candidates.filter(c => !creditOnly || c.netMid > 0);
+    if (sortBy === 'perDay') cands = [...cands].sort((a, b) => b.creditPerDay - a.creditPerDay);
+    const pickKeys = { [r.picks.bestCreditPerDay ? optKey({ ...o, strike: r.picks.bestCreditPerDay.strike, expiration: r.picks.bestCreditPerDay.expiration }) : '']: 'most $/day',
+                       [r.picks.bestStrikeForCredit ? optKey({ ...o, strike: r.picks.bestStrikeForCredit.strike, expiration: r.picks.bestStrikeForCredit.expiration }) : '']: isPut ? 'lowest strike for credit' : 'highest strike for credit' };
+    return (
+      <div className="py-3">
+        {/* where the position stands */}
+        <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm font-mono mb-3">
+          <span className="text-gray-400">Stock <span className="text-gray-100">{fmt.dollar(p.price)}</span>
+            <span className={`ml-1 ${p.itm ? 'text-red-400' : 'text-green-400'}`}>{p.itm ? 'ITM' : 'OTM'} {Math.abs(p.moneynessPct)}%</span></span>
+          <span className="text-gray-400">Δ <span className="text-gray-100">{p.delta ?? '—'}</span></span>
+          <span className="text-gray-400">{p.dte}d left</span>
+          <span className="text-gray-400">Close @ <span className="text-gray-100">{fmt.dollar(p.mid)}</span>
+            <span className="text-gray-600"> ({fmt.dollar(p.bid)}/{fmt.dollar(p.ask)})</span></span>
+          <span className="text-gray-400" title="Time value left — near zero on an ITM option means early-assignment risk">
+            extrinsic <span className={p.itm && p.extrinsic < 0.15 ? 'text-orange-400' : 'text-gray-100'}>{fmt.dollar(p.extrinsic)}</span></span>
+          {p.closePnl != null && (
+            <span className={atTarget ? 'text-green-300 font-bold' : 'text-gray-400'}>
+              close now: {p.closePnl >= 0 ? '+' : '−'}${Math.abs(p.closePnl).toFixed(0)} · {p.pctOfMaxProfit}% of max
+              {atTarget && ` — past your ${CLOSE_TARGET_PCT}% target`}
+            </span>)}
+          {p.stale && <span className="text-orange-400">stale quotes — market closed?</span>}
+        </div>
+
+        <div className="flex items-center gap-4 mb-2 text-xs text-gray-400">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={creditOnly} onChange={e => setCreditOnly(e.target.checked)} className="accent-indigo-500" />
+            credit rolls only
+          </label>
+          <label className="flex items-center gap-1.5">sort
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="bg-gray-800 border border-gray-700 rounded px-1 py-0.5">
+              <option value="expiry">by expiry</option><option value="perDay">by $/day</option>
+            </select>
+          </label>
+          <span className="text-gray-600">net = sell new − buy back, at mid (natural = worst fill)</span>
+        </div>
+
+        {cands.length === 0 ? <p className="text-gray-500 text-sm">No {creditOnly ? 'credit ' : ''}rolls within 9 weeks at this strike or better.</p> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm font-mono">
+              <thead><tr className="text-xs text-gray-500 text-left border-b border-gray-700">
+                <th className="py-1.5 pr-3">Roll to</th><th className="py-1.5 pr-3">Strike</th>
+                <th className="py-1.5 pr-3">Net / sh</th><th className="py-1.5 pr-3">Net $</th><th className="py-1.5 pr-3">$/added day</th>
+                <th className="py-1.5 pr-3">Δ</th>
+                <th className="py-1.5 pr-3">{isPut ? 'Breakeven' : 'If called'}</th>
+                <th className="py-1.5 pr-3">Ann %</th><th className="py-1.5">OI</th>
+              </tr></thead>
+              <tbody>{cands.map(c => {
+                const tag = pickKeys[optKey({ ...o, strike: c.strike, expiration: c.expiration })];
+                return (
+                  <tr key={c.expiration + c.strike} className={`border-b border-gray-800 ${tag ? 'bg-indigo-950/40' : ''}`}>
+                    <td className="py-1.5 pr-3 text-gray-200">{formatExp(c.expiration)} <span className="text-gray-500">+{c.addedDays}d</span>
+                      {c.earningsInWindow && <span className="ml-1 text-yellow-400" title={`Earnings ${r.earningsDate} before this expiry`}>⚠</span>}
+                      {tag && <span className="ml-2 text-[10px] uppercase text-indigo-300">{tag}</span>}</td>
+                    <td className="py-1.5 pr-3 text-gray-100">${c.strike}
+                      {c.strikeChange !== 0 && <span className="text-gray-500"> ({c.strikeChange > 0 ? '+' : ''}{c.strikeChange})</span>}</td>
+                    <td className={`py-1.5 pr-3 ${c.netMid >= 0 ? 'text-green-400' : 'text-red-400'}`}>{c.netMid >= 0 ? '+' : ''}{c.netMid.toFixed(2)}
+                      <span className="text-gray-600 text-xs"> nat {c.netNatural == null ? '—' : c.netNatural.toFixed(2)}</span></td>
+                    <td className={`py-1.5 pr-3 ${c.netTotal >= 0 ? 'text-green-400' : 'text-red-400'}`}>{c.netTotal >= 0 ? '+' : '−'}${Math.abs(c.netTotal).toFixed(0)}</td>
+                    <td className="py-1.5 pr-3 text-indigo-300">{c.creditPerDay.toFixed(2)}</td>
+                    <td className="py-1.5 pr-3 text-gray-300">{c.delta ?? '—'}</td>
+                    <td className="py-1.5 pr-3 text-gray-300">{isPut ? fmt.dollar(c.breakeven)
+                      : c.ifCalledPnl == null ? <span className="text-gray-600">add basis</span>
+                      : <span className={c.ifCalledPnl < 0 ? 'text-red-400' : ''}>{c.ifCalledPnl < 0 ? '−' : '+'}${Math.abs(c.ifCalledPnl).toFixed(0)}</span>}</td>
+                    <td className="py-1.5 pr-3 text-gray-400">{c.annualizedPct == null ? '—' : `${c.annualizedPct}%`}</td>
+                    <td className={`py-1.5 ${c.lowOI ? 'text-orange-400' : 'text-gray-500'}`}>{c.openInterest}</td>
+                  </tr>);
+              })}</tbody>
+            </table>
+          </div>)}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-6 bg-gray-900 border border-gray-700 rounded-xl p-4">
+      <div className="mb-3">
+        <h3 className="text-sm font-semibold text-gray-200">Roll compare</h3>
+        <p className="text-xs text-gray-500">Open short calls/puts. Schwab ones load automatically; add Fidelity ones below.
+          {schwabErr && <span className="text-orange-400"> Schwab positions unavailable ({schwabErr.slice(0, 80)}) — re-auth?</span>}</p>
+      </div>
+
+      {loading ? <p className="text-gray-500 text-sm">Loading positions…</p> : rows.length === 0 ? (
+        <p className="text-gray-500 text-sm mb-3">No open short options yet.</p>
+      ) : (
+        <div className="flex flex-col gap-2 mb-4">
+          {rows.map(o => {
+            const k = optKey(o), isSaved = saved.some(s => optKey(s) === k);
+            return (
+              <div key={k} className={`border rounded-lg px-3 ${openKey === k ? 'border-indigo-700' : 'border-gray-800'}`}>
+                <div className="flex flex-wrap items-center gap-3 py-2 text-sm">
+                  <span className="font-bold text-white w-14">{o.symbol}</span>
+                  <span className="font-mono text-gray-200">{formatExp(o.expiration)} ${o.strike}{o.putCall === 'PUT' ? 'P' : 'C'}</span>
+                  <span className="text-xs text-gray-500">×{o.qty}{o.openPremium != null && ` · sold ${fmt.dollar(o.openPremium)}`}</span>
+                  <span className="text-[10px] uppercase text-gray-500 border border-gray-700 rounded px-1">{o.fromSchwab ? 'Schwab' : (o.broker || 'Manual')}</span>
+                  <label className="text-xs text-gray-500 flex items-center gap-1" title="All premium collected on this chain per share, including this contract">chain credit
+                    <input type="number" step="0.01" defaultValue={o.creditSoFar ?? ''} placeholder={o.openPremium ?? ''}
+                      onBlur={e => upsert({ ...o, creditSoFar: e.target.value })} className={`${inp} w-20`} /></label>
+                  {o.putCall === 'CALL' && (
+                    <label className="text-xs text-gray-500 flex items-center gap-1">share basis
+                      <input type="number" step="0.01" defaultValue={o.costBasis ?? ''}
+                        onBlur={e => upsert({ ...o, costBasis: e.target.value })} className={`${inp} w-20`} /></label>)}
+                  <div className="ml-auto flex items-center gap-2">
+                    <button onClick={() => compare(o)} className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded">
+                      {openKey === k ? 'Hide' : 'Compare rolls'}</button>
+                    {isSaved && !o.fromSchwab && <button onClick={() => removeSaved(o)} className="text-gray-500 hover:text-red-400 text-xs" title="Remove">✕</button>}
+                  </div>
+                </div>
+                {openKey === k && <RollResult r={results[k]} o={o} />}
+              </div>);
+          })}
+        </div>)}
+
+      {/* manual add (Fidelity, or anything Schwab doesn't show) */}
+      <div className="flex flex-wrap items-end gap-2 text-xs text-gray-400">
+        <input placeholder="TICKER" value={form.symbol} maxLength={6}
+          onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase() })} className={`${inp} w-24`} />
+        <select value={form.putCall} onChange={e => setForm({ ...form, putCall: e.target.value })} className={inp}>
+          <option value="PUT">Put</option><option value="CALL">Call</option></select>
+        <input type="number" step="0.5" placeholder="strike" value={form.strike}
+          onChange={e => setForm({ ...form, strike: e.target.value })} className={`${inp} w-24`} />
+        <input type="date" value={form.expiration} onChange={e => setForm({ ...form, expiration: e.target.value })} className={inp} />
+        <input type="number" min={1} placeholder="qty" value={form.qty}
+          onChange={e => setForm({ ...form, qty: e.target.value })} className={`${inp} w-16`} />
+        <input type="number" step="0.01" placeholder="sold @" value={form.openPremium}
+          onChange={e => setForm({ ...form, openPremium: e.target.value })} className={`${inp} w-24`} />
+        <button onClick={addManual} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded">+ Add position</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── COVERED-CALL BOARD ──────────────────────────────────────────────────────
 // One scan across every position with a cost basis + shares. For each lot:
 // the target-delta call (any strike, with the $ locked in if called) next to
@@ -1625,6 +1842,7 @@ function PositionsTab() {
       <p className="text-xs text-gray-700 mb-5">Positions persist across redeploys as long as a Railway volume is attached to this service. Without one, edits still live in the running container and reset to <code className="text-gray-600">config.default.json</code> on the next deploy.</p>
 
       <CoveredCallBoard positionCount={watchlist.filter(w => w.costBasis && (w.shares ?? 0) >= 100).length} />
+      <RollBoard />
 
       {/* ── add input ── */}
       <div className="flex gap-2 mb-2">
