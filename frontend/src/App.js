@@ -1416,6 +1416,9 @@ function RollBoard() {
   const [creditOnly, setCreditOnly] = useState(true);
   const [sortBy, setSortBy]       = useState('expiry');
   const [form, setForm]           = useState({ symbol: '', putCall: 'PUT', strike: '', expiration: '', qty: 1, openPremium: '' });
+  const [buyback, setBuyback]     = useState({});    // newKey -> price paid to close the old contract
+  const [rollForm, setRollForm]   = useState(null);  // manual "Rolled" form: {key, strike, expiration, soldAt, boughtBack}
+  const autoSaved = useRef(false);
 
   useEffect(() => {
     fetch(`${API}/open-options`).then(r => r.json()).then(d => {
@@ -1424,12 +1427,65 @@ function RollBoard() {
   }, []);
 
   // saved entries override Schwab ones (they carry credit-so-far / basis)
+  const schwabOK   = !loading && !schwabErr;
+  const schwabKeys = new Set(schwab.map(optKey));
+  const savedKeys  = new Set(saved.map(optKey));
+  // Saved Schwab contracts that are no longer in the account were closed or rolled.
+  const gone  = schwabOK ? saved.filter(s => s.broker === 'Schwab' && !schwabKeys.has(optKey(s))) : [];
+  // A new Schwab contract on the same ticker + side as one that just went away
+  // is probably its roll: offer to carry the chain credit (and basis) forward.
+  const rollPairs = {};
+  for (const n of schwab) {
+    if (savedKeys.has(optKey(n))) continue;
+    const old = gone.find(g => g.symbol === n.symbol && g.putCall === n.putCall
+      && !Object.values(rollPairs).some(p => optKey(p) === optKey(g)));
+    if (old) rollPairs[optKey(n)] = old;
+  }
+  const goneKeys = new Set(gone.map(optKey));
+
   const byKey = {};
   for (const o of schwab) byKey[optKey(o)] = { ...o, fromSchwab: true };
-  for (const o of saved)  byKey[optKey(o)] = { ...(byKey[optKey(o)] || {}), ...o };
+  for (const o of saved)  if (!goneKeys.has(optKey(o))) byKey[optKey(o)] = { ...(byKey[optKey(o)] || {}), ...o };
   const today = new Date().toISOString().slice(0, 10);
   const rows = Object.values(byKey).filter(o => o.expiration >= today)
     .sort((a, b) => a.expiration.localeCompare(b.expiration) || a.symbol.localeCompare(b.symbol));
+
+  // Remember every Schwab contract (so a later roll has something to carry
+  // from) and drop closed ones that aren't waiting on a roll decision.
+  useEffect(() => {
+    if (!schwabOK || autoSaved.current) return;
+    autoSaved.current = true;
+    const paired = new Set(Object.values(rollPairs).map(optKey));
+    const keep  = saved.filter(s => !goneKeys.has(optKey(s)) || paired.has(optKey(s)));
+    const add   = schwab.filter(n => !savedKeys.has(optKey(n)) && !rollPairs[optKey(n)])
+      .map(n => ({ symbol: n.symbol, putCall: n.putCall, strike: n.strike, expiration: n.expiration, qty: n.qty,
+                   openPremium: n.openPremium ?? null, creditSoFar: null, costBasis: null, broker: 'Schwab' }));
+    if (add.length || keep.length !== saved.length) persist([...keep, ...add]).catch(() => {});
+  }, [schwabOK]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function chainBase(o) { return Number(o.creditSoFar ?? o.openPremium ?? 0); }
+
+  // new chain credit = old chain credit − what the old contract cost to close + what the new one sold for
+  function carryOver(newRow, old, paid, soldAt) {
+    const credit = Math.round((chainBase(old) - Number(paid || 0) + Number(soldAt ?? newRow.openPremium ?? 0)) * 100) / 100;
+    const next = { symbol: newRow.symbol, putCall: newRow.putCall, strike: Number(newRow.strike), expiration: newRow.expiration,
+      qty: Number(newRow.qty ?? old.qty) || 1, openPremium: Number(soldAt ?? newRow.openPremium) || null,
+      creditSoFar: credit, costBasis: old.costBasis ?? null, broker: newRow.broker || old.broker || '' };
+    persist([...saved.filter(s => optKey(s) !== optKey(old) && optKey(s) !== optKey(next)), next]).catch(() => {});
+  }
+
+  function notARoll(newRow, old) {
+    const fresh = { symbol: newRow.symbol, putCall: newRow.putCall, strike: newRow.strike, expiration: newRow.expiration,
+      qty: newRow.qty, openPremium: newRow.openPremium ?? null, creditSoFar: null, costBasis: null, broker: 'Schwab' };
+    persist([...saved.filter(s => optKey(s) !== optKey(old)), fresh]).catch(() => {});
+  }
+
+  function saveManualRoll(o) {
+    const f = rollForm;
+    if (!f.strike || !f.expiration || f.soldAt === '' || f.boughtBack === '') return;
+    carryOver({ ...o, strike: Number(f.strike), expiration: f.expiration, broker: o.broker || 'Manual' }, o, f.boughtBack, f.soldAt);
+    setRollForm(null);
+  }
 
   async function persist(next) {
     setSaved(next);
@@ -1578,18 +1634,44 @@ function RollBoard() {
                   <span className="text-xs text-gray-500">×{o.qty}{o.openPremium != null && ` · sold ${fmt.dollar(o.openPremium)}`}</span>
                   <span className="text-[10px] uppercase text-gray-500 border border-gray-700 rounded px-1">{o.fromSchwab ? 'Schwab' : (o.broker || 'Manual')}</span>
                   <label className="text-xs text-gray-500 flex items-center gap-1" title="All premium collected on this chain per share, including this contract">chain credit
-                    <input type="number" step="0.01" defaultValue={o.creditSoFar ?? ''} placeholder={o.openPremium ?? ''}
+                    <input key={`c${o.creditSoFar}`} type="number" step="0.01" defaultValue={o.creditSoFar ?? ''} placeholder={o.openPremium ?? ''}
                       onBlur={e => upsert({ ...o, creditSoFar: e.target.value })} className={`${inp} w-20`} /></label>
                   {o.putCall === 'CALL' && (
                     <label className="text-xs text-gray-500 flex items-center gap-1">share basis
-                      <input type="number" step="0.01" defaultValue={o.costBasis ?? ''}
+                      <input key={`b${o.costBasis}`} type="number" step="0.01" defaultValue={o.costBasis ?? ''}
                         onBlur={e => upsert({ ...o, costBasis: e.target.value })} className={`${inp} w-20`} /></label>)}
                   <div className="ml-auto flex items-center gap-2">
                     <button onClick={() => compare(o)} className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded">
                       {openKey === k ? 'Hide' : 'Compare rolls'}</button>
+                    {!o.fromSchwab && (
+                      <button onClick={() => setRollForm(rollForm?.key === k ? null : { key: k, strike: '', expiration: '', soldAt: '', boughtBack: '' })}
+                        className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded" title="Record a roll you made at another broker">Rolled</button>)}
                     {isSaved && !o.fromSchwab && <button onClick={() => removeSaved(o)} className="text-gray-500 hover:text-red-400 text-xs" title="Remove">✕</button>}
                   </div>
                 </div>
+                {rollPairs[k] && (() => { const old = rollPairs[k]; return (
+                  <div className="flex flex-wrap items-center gap-2 pb-2 text-xs text-yellow-200">
+                    <span>Rolled from {formatExp(old.expiration)} ${old.strike}{old.putCall === 'PUT' ? 'P' : 'C'} (chain credit {chainBase(old).toFixed(2)})? Bought it back at</span>
+                    <input type="number" step="0.01" value={buyback[k] ?? ''} placeholder="0.00"
+                      onChange={e => setBuyback({ ...buyback, [k]: e.target.value })} className={`${inp} w-20`} />
+                    {buyback[k] !== undefined && buyback[k] !== '' && (
+                      <span className="text-gray-400">→ new chain credit {(chainBase(old) - Number(buyback[k]) + Number(o.openPremium ?? 0)).toFixed(2)}</span>)}
+                    <button disabled={buyback[k] === undefined || buyback[k] === ''} onClick={() => carryOver(o, old, buyback[k])}
+                      className="px-2 py-1 bg-yellow-700 hover:bg-yellow-600 disabled:opacity-40 text-white rounded">Carry over</button>
+                    <button onClick={() => notARoll(o, old)} className="px-2 py-1 text-gray-400 hover:text-white">Not a roll</button>
+                  </div>); })()}
+                {rollForm?.key === k && (
+                  <div className="flex flex-wrap items-center gap-2 pb-2 text-xs text-gray-400">
+                    <span>Rolled to</span>
+                    <input type="number" step="0.5" placeholder="strike" value={rollForm.strike}
+                      onChange={e => setRollForm({ ...rollForm, strike: e.target.value })} className={`${inp} w-20`} />
+                    <input type="date" value={rollForm.expiration} onChange={e => setRollForm({ ...rollForm, expiration: e.target.value })} className={inp} />
+                    <span>sold @</span>
+                    <input type="number" step="0.01" value={rollForm.soldAt} onChange={e => setRollForm({ ...rollForm, soldAt: e.target.value })} className={`${inp} w-20`} />
+                    <span>bought back old @</span>
+                    <input type="number" step="0.01" value={rollForm.boughtBack} onChange={e => setRollForm({ ...rollForm, boughtBack: e.target.value })} className={`${inp} w-20`} />
+                    <button onClick={() => saveManualRoll(o)} className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded">Save roll</button>
+                  </div>)}
                 {openKey === k && <RollResult r={results[k]} o={o} />}
               </div>);
           })}
