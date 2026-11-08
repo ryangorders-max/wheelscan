@@ -1461,7 +1461,7 @@ function RollBoard() {
       .map(n => ({ symbol: n.symbol, putCall: n.putCall, strike: n.strike, expiration: n.expiration, qty: n.qty,
                    openPremium: n.openPremium ?? null, creditSoFar: null, costBasis: null, broker: 'Schwab' }));
     if (add.length || keep.length !== saved.length) persist([...keep, ...add]).catch(() => {});
-  }, [schwabOK]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [schwabOK]);
 
   function chainBase(o) { return Number(o.creditSoFar ?? o.openPremium ?? 0); }
 
