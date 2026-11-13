@@ -146,3 +146,44 @@ def _num(v) -> float:
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def get_quotes(symbols: list[str]) -> dict[str, dict]:
+    """{SYM: {last, change, changePct, high, low, prevClose, volume, high52, low52}}
+    One proxy call via /quotes; falls back to /quote per symbol if the proxy
+    hasn't been redeployed with /quotes yet."""
+    syms = [s.upper() for s in symbols if s]
+    if not syms:
+        return {}
+    try:
+        raw = _get("/quotes", params={"symbols": ",".join(syms)}) or {}
+    except SchwabUnavailable as exc:
+        if "404" not in str(exc):
+            raise
+        raw = {}
+        for s in syms:
+            try:
+                raw.update(_get(f"/quote/{s}") or {})
+            except SchwabUnavailable:
+                continue
+    out = {}
+    for sym, d in raw.items():
+        q = (d or {}).get("quote") or {}
+        last = _num(q.get("lastPrice")) or _num(q.get("mark"))
+        prev = _num(q.get("closePrice"))
+        if not last:
+            continue
+        chg = q.get("netChange")
+        pct = q.get("netPercentChange")
+        out[sym.upper()] = {
+            "last": round(last, 2),
+            "change": round(_num(chg), 2) if chg is not None else (round(last - prev, 2) if prev else None),
+            "changePct": round(_num(pct), 2) if pct is not None else (round((last - prev) / prev * 100, 2) if prev else None),
+            "high": _num(q.get("highPrice")) or None,
+            "low": _num(q.get("lowPrice")) or None,
+            "prevClose": prev or None,
+            "volume": int(_num(q.get("totalVolume"))) or None,
+            "high52": _num(q.get("52WeekHigh")) or None,
+            "low52": _num(q.get("52WeekLow")) or None,
+        }
+    return out

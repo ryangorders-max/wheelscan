@@ -6,6 +6,30 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 // so we use an empty string and rely on relative paths.
 const API = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
 
+// ─── Passcode ────────────────────────────────────────────────────────────────
+// When WHEELSCAN_PASSCODE is set on the backend, every API call must carry it.
+// It's asked for once per device and kept in this browser's storage; any 401
+// brings the passcode screen back (e.g. after you change it).
+const AUTH_STORAGE_KEY = 'wheelscanKey';
+function readPasscode() { try { return localStorage.getItem(AUTH_STORAGE_KEY) || ''; } catch { return ''; } }
+function writePasscode(v) { try { localStorage.setItem(AUTH_STORAGE_KEY, v); } catch { /* private mode */ } }
+let memoryPasscode = '';
+if (typeof window !== 'undefined' && !window.__wheelscanFetch) {
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (!url.startsWith(API)) return origFetch(input, init);
+    const headers = new Headers(init.headers || {});
+    const key = readPasscode() || memoryPasscode;
+    if (key) headers.set('X-WheelScan-Key', key);
+    return origFetch(input, { ...init, headers }).then(r => {
+      if (r.status === 401) window.dispatchEvent(new Event('wheelscan-auth'));
+      return r;
+    });
+  };
+  window.__wheelscanFetch = true;
+}
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 const fmt = {
@@ -2140,8 +2164,194 @@ function PositionsTab() {
 
 // ─── ROOT APP ────────────────────────────────────────────────────────────────
 
+// ─── WATCHLIST (phone-first) ─────────────────────────────────────────────────
+// Live Schwab quotes for a short list, refreshed every 15s while the screen is
+// visible. Separate from the screener's scan list. Tap a row for a chart.
+const WATCH_REFRESH_MS = 15000;
+
+function daysUntil(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + 'T12:00:00'), now = new Date();
+  return Math.round((d - now) / 86400000);
+}
+
+function WatchTab() {
+  const [data, setData]       = useState(null);
+  const [err, setErr]         = useState('');
+  const [input, setInput]     = useState('');
+  const [open, setOpen]       = useState(null);
+  const [range, setRange]     = useState('1D');
+
+  const load = useCallback(async () => {
+    try {
+      const d = await fetch(`${API}/watch`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+      setData(d); setErr('');
+    } catch (e) { setErr(e.message); }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(() => { if (document.visibilityState === 'visible') load(); }, WATCH_REFRESH_MS);
+    const onVis = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVis); };
+  }, [load]);
+
+  async function saveSymbols(next) {
+    setData(d => d ? { ...d, symbols: next } : d);
+    const current = await fetch(`${API}/config`).then(r => r.json());
+    await fetch(`${API}/config`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...current, quickWatch: next }),
+    });
+    load();
+  }
+
+  function add() {
+    const syms = input.toUpperCase().split(/[\s,]+/).map(s => s.trim()).filter(s => /^[A-Z.]{1,6}$/.test(s));
+    if (!syms.length || !data) return;
+    const next = [...data.symbols, ...syms.filter(s => !data.symbols.includes(s))];
+    setInput('');
+    saveSymbols(next).catch(() => {});
+  }
+
+  function remove(sym) {
+    if (!data) return;
+    setOpen(null);
+    saveSymbols(data.symbols.filter(s => s !== sym)).catch(() => {});
+  }
+
+  function move(sym, dir) {
+    const list = [...data.symbols], i = list.indexOf(sym), j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    saveSymbols(list).catch(() => {});
+  }
+
+  const chartSrc = sym => 'https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=en#' +
+    encodeURIComponent(JSON.stringify({ symbol: sym, width: '100%', height: 220, dateRange: range === '1D' ? '1D' : range,
+      colorTheme: 'dark', isTransparent: true, autosize: true, largeChartUrl: '' }));
+
+  const asOf = data?.asOf ? new Date(data.asOf * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '';
+
+  return (
+    <div className="flex-1 w-full max-w-xl mx-auto px-3 py-3">
+      <div className="flex gap-2 mb-3">
+        <input value={input} onChange={e => setInput(e.target.value.toUpperCase())}
+          onKeyDown={e => { if (e.key === 'Enter') add(); }}
+          placeholder="Add ticker(s)" autoCapitalize="characters" autoCorrect="off"
+          className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 font-mono text-base text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+        <button onClick={add} className="px-4 bg-indigo-600 active:bg-indigo-500 text-white font-semibold rounded-lg">Add</button>
+      </div>
+
+      <div className="flex justify-between text-xs text-gray-500 mb-2 px-1">
+        <span>{data?.source === 'yfinance'
+          ? <span className="text-orange-400">Schwab unavailable — delayed quotes (re-auth?)</span>
+          : 'Schwab live'}</span>
+        <span>{err ? <span className="text-red-400">{err}</span> : asOf && `as of ${asOf}`}</span>
+      </div>
+
+      {!data ? <p className="text-gray-500 text-sm px-1">Loading…</p>
+        : data.symbols.length === 0 ? <p className="text-gray-500 text-sm px-1">Add a ticker to start.</p>
+        : (
+        <div className="flex flex-col divide-y divide-gray-800 bg-gray-900 rounded-xl border border-gray-800">
+          {data.symbols.map(sym => {
+            const q = data.quotes[sym], held = data.held[sym] || [], er = daysUntil(data.earnings[sym]);
+            const up = (q?.changePct ?? 0) >= 0, isOpen = open === sym;
+            return (
+              <div key={sym}>
+                <button onClick={() => setOpen(isOpen ? null : sym)} className="w-full text-left px-4 py-3 active:bg-gray-800">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg font-bold text-white">{sym}</span>
+                        {er != null && er >= 0 && er <= 14 && (
+                          <span className="text-[11px] font-semibold text-yellow-300 bg-yellow-950 rounded px-1.5" title={`Earnings ${data.earnings[sym]}`}>ER {er === 0 ? 'today' : `${er}d`}</span>)}
+                      </div>
+                      {held.length > 0 && <div className="text-[11px] text-indigo-300 truncate">{held.join(' · ')}</div>}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-lg font-mono font-semibold text-gray-100">{q ? q.last.toFixed(2) : '—'}</div>
+                      <div className={`text-sm font-mono font-semibold ${q ? (up ? 'text-green-400' : 'text-red-400') : 'text-gray-600'}`}>
+                        {q && q.changePct != null ? `${up ? '+' : ''}${q.change?.toFixed(2)} (${up ? '+' : ''}${q.changePct.toFixed(2)}%)` : ''}
+                      </div>
+                    </div>
+                  </div>
+                  {q && q.low != null && q.high != null && (
+                    <div className="mt-1 text-[11px] font-mono text-gray-500">day {q.low.toFixed(2)} – {q.high.toFixed(2)}
+                      {q.low52 != null && q.high52 != null && <span> · 52w {q.low52.toFixed(2)} – {q.high52.toFixed(2)}</span>}</div>)}
+                </button>
+                {isOpen && (
+                  <div className="px-3 pb-3">
+                    <div className="flex gap-1 mb-2">
+                      {['1D', '1M', '3M', '12M'].map(r => (
+                        <button key={r} onClick={() => setRange(r)}
+                          className={`px-2.5 py-1 rounded text-xs ${range === r ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400'}`}>{r}</button>))}
+                      <div className="ml-auto flex gap-1">
+                        <button onClick={() => move(sym, -1)} className="px-2.5 py-1 rounded text-xs bg-gray-800 text-gray-300">↑</button>
+                        <button onClick={() => move(sym, 1)} className="px-2.5 py-1 rounded text-xs bg-gray-800 text-gray-300">↓</button>
+                        <button onClick={() => remove(sym)} className="px-2.5 py-1 rounded text-xs bg-gray-800 text-red-400">Remove</button>
+                      </div>
+                    </div>
+                    <iframe key={sym + range} title={`${sym} chart`} src={chartSrc(sym)}
+                      className="w-full h-[220px] rounded-lg border border-gray-800" />
+                    {data.earnings[sym] && <div className="text-[11px] text-gray-500 mt-1">Next earnings {data.earnings[sym]}</div>}
+                  </div>)}
+              </div>);
+          })}
+        </div>)}
+    </div>
+  );
+}
+
+// ─── Passcode gate ───────────────────────────────────────────────────────────
+function PasscodeScreen({ onSubmit, wrong }) {
+  const [v, setV] = useState('');
+  return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-6">
+      <form onSubmit={e => { e.preventDefault(); if (v) onSubmit(v); }} className="w-full max-w-xs flex flex-col gap-3">
+        <div className="text-xl font-bold text-white text-center">WheelScan</div>
+        <input type="password" autoFocus value={v} onChange={e => setV(e.target.value)} placeholder="Passcode"
+          autoComplete="current-password"
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-3 text-base text-white text-center focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+        {wrong && <div className="text-red-400 text-sm text-center">Wrong passcode</div>}
+        <button className="py-3 bg-indigo-600 active:bg-indigo-500 text-white font-semibold rounded-lg">Unlock</button>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
-  const [tab,          setTab]          = useState('screener');
+  const [state, setState] = useState('checking');   // checking | ok | locked | wrong | offline
+
+  const check = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/auth/check`);
+      setState(r.ok ? 'ok' : (readPasscode() || memoryPasscode ? 'wrong' : 'locked'));
+    } catch { setState('offline'); }
+  }, []);
+
+  useEffect(() => {
+    check();
+    const relock = () => setState(s => (s === 'ok' ? 'locked' : s));
+    window.addEventListener('wheelscan-auth', relock);
+    return () => window.removeEventListener('wheelscan-auth', relock);
+  }, [check]);
+
+  if (state === 'checking') return <div className="min-h-screen bg-gray-950" />;
+  if (state === 'locked' || state === 'wrong') {
+    return <PasscodeScreen wrong={state === 'wrong'} onSubmit={v => { memoryPasscode = v; writePasscode(v); check(); }} />;
+  }
+  if (state === 'offline') {
+    return <div className="min-h-screen bg-gray-950 text-gray-400 flex flex-col gap-3 items-center justify-center">
+      Can't reach the WheelScan backend.<button onClick={check} className="px-4 py-2 bg-gray-800 rounded-lg text-white">Retry</button></div>;
+  }
+  return <MainApp />;
+}
+
+function MainApp() {
+  const [tab,          setTab]          = useState(() =>
+    (typeof window !== 'undefined' && window.innerWidth < 768) ? 'watch' : 'screener');
   const [collateralCap,setCollateralCap]= useState(12000);
   const [collateralFloor,setCollateralFloor] = useState(0);
   const [minPremium,   setMinPremium]   = useState(0);
@@ -2179,13 +2389,14 @@ export default function App() {
     <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
 
       {/* ── TOP BAR ── */}
-      <div className="sticky top-0 z-20 bg-gray-900 border-b border-gray-800 px-6 py-3">
-        <div className="flex flex-wrap items-end gap-6">
+      <div className="sticky top-0 z-20 bg-gray-900 border-b border-gray-800 px-3 sm:px-6 py-3">
+        <div className={`flex flex-wrap items-end ${tab === 'watch' ? 'gap-3' : 'gap-6'}`}>
           <div className="flex items-baseline gap-2 mr-1">
             <span className="text-lg font-bold text-white tracking-tight">WheelScan</span>
             <span className="text-xs text-gray-500">CSP Screener</span>
           </div>
 
+          <div className={tab === 'watch' ? 'hidden' : 'contents'}>
           {/* collateral floor — filter only, not scored */}
           <div className="flex flex-col gap-1 min-w-[160px]">
             <label className="text-xs text-gray-400">
@@ -2264,13 +2475,15 @@ export default function App() {
               className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-indigo-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 text-right" />
           </div>
 
+          </div>
+
           {/* AI spend + tab switcher */}
           <div className="ml-auto flex items-center gap-3">
-          <CouncilSpend />
+          {tab !== 'watch' && <CouncilSpend />}
           <div className="flex items-center gap-0.5 bg-gray-800 rounded-lg p-0.5">
-            {['screener', 'positions'].map(t => (
+            {['watch', 'screener', 'positions'].map(t => (
               <button key={t} onClick={() => setTab(t)}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors capitalize
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-colors capitalize
                   ${tab === t ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
                 {t.charAt(0).toUpperCase() + t.slice(1)}
               </button>
@@ -2285,6 +2498,7 @@ export default function App() {
                                  collateralCap={collateralCap} minPremium={minPremium}
                                  hideEarnings={hideEarnings} minQuality={minQuality} />}
       {tab === 'positions'  && <PositionsTab />}
+      {tab === 'watch'      && <WatchTab />}
     </div>
   );
 }

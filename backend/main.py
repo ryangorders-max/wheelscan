@@ -1,7 +1,9 @@
 import json
 import os
+import secrets
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -12,6 +14,7 @@ from data import scan_watchlist, get_stock_info, get_heatmap, score_results, rec
 import council
 from quality import attach_quality
 from rolls import get_rolls
+from watch import get_watch
 import schwab_source
 
 BASE_DIR           = Path(__file__).parent
@@ -41,6 +44,35 @@ _bootstrap()
 council.init_storage(DATA_DIR)
 
 app = FastAPI(title="WheelScan API")
+
+# ── passcode ──────────────────────────────────────────────────────────────
+# Set WHEELSCAN_PASSCODE on the Railway service to lock the API: every request
+# must then carry it in the X-WheelScan-Key header (the frontend asks once per
+# device and remembers it). Unset = open, so a deploy can never lock you out
+# before the variable exists. Registered before CORS so 401s still carry CORS
+# headers and the browser can read them.
+PASSCODE = os.environ.get("WHEELSCAN_PASSCODE", "")
+
+
+@app.middleware("http")
+async def require_passcode(request: Request, call_next):
+    if PASSCODE and request.method != "OPTIONS" and request.url.path != "/health":
+        key = request.headers.get("x-wheelscan-key", "")
+        if not secrets.compare_digest(key.encode(), PASSCODE.encode()):
+            return JSONResponse({"detail": "passcode required"}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/auth/check")
+def auth_check():
+    """200 if the passcode (or no passcode) is accepted — the frontend's gate."""
+    return {"ok": True, "locked": bool(PASSCODE)}
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -82,6 +114,7 @@ class Config(BaseModel):
     ccDteHigh: int = 35
     minQuality: str = "Any"        # Any | A | B | C — UI filter only, never scored
     openOptions: List[OpenOption] = []
+    quickWatch: Optional[List[str]] = None   # phone watchlist; None = start with what you hold
     minROC: float
     targetROC: float
     targetDelta: float
@@ -217,6 +250,12 @@ def rolls(req: RollRequest):
         qty=req.qty, open_premium=req.openPremium,
         credit_so_far=req.creditSoFar, cost_basis=req.costBasis,
     )
+
+
+@app.get("/watch")
+def watch():
+    """Quick watchlist: live quotes + earnings + what you hold, for the phone view."""
+    return get_watch(read_config())
 
 
 @app.get("/open-options")
